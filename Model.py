@@ -398,12 +398,25 @@ class Gaussians(torch.nn.Module):
         )
 
     def adaptive_density_control(
-        self, grad_threshold: float, min_opacity: float, prune_large_gaussians: bool
+        self,
+        grad_threshold: float,
+        min_opacity: float,
+        prune_large_gaussians: bool,
+        importance_score: torch.Tensor | None = None,
+        importance_threshold: float = 0.0,
     ) -> None:
-        """Densify Gaussians and prune those that are not visible or too large."""
+        """Densify Gaussians and prune those that are not visible or too large.
+
+        When `importance_score` is provided (FastGS VCD), densification is additionally gated by
+        the multi-view consistency importance score: only Gaussians that consistently lie in
+        high-error regions across sampled views (score > `importance_threshold`) are densified.
+        Passing `None` reproduces the original gradient-only densification behavior.
+        """
         densification_mask = self.densification_info[
             1
         ] >= grad_threshold * self.densification_info[0].clamp_min(1.0)
+        if importance_score is not None:
+            densification_mask &= importance_score > importance_threshold
         is_small = torch.max(self._scales, dim=1).values <= math.log(
             self.percent_dense * self.training_cameras_extent
         )

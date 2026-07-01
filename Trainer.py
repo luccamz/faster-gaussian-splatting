@@ -1,5 +1,7 @@
 """FasterGS/Trainer.py"""
 
+import random
+
 import torch
 
 import Framework
@@ -31,6 +33,24 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
         INTERVAL=3_000,
         SOFT_PRUNING_RATIO=0.8,
         HARD_PRUNING_RATIO=0.3,
+    ),
+    FASTGS=Framework.ConfigParameterList(
+        # FastGS multi-view consistency densification (VCD) / pruning (VCP); only used when USE_MCMC=False
+        N_SAMPLED_VIEWS=10,  # K: number of training views sampled per densify interval for scoring
+        LOSS_THRESHOLD=0.1,  # tau: normalized per-pixel L1 above which a pixel counts as high-error
+        VCD=Framework.ConfigParameterList(
+            USE=False,
+            IMPORTANCE_THRESHOLD=5,  # tau_d: min avg high-error-pixel count for a Gaussian to be densified
+        ),
+        VCP=Framework.ConfigParameterList(
+            USE=False,  # wired in a later step; declared here for a single config surface
+            SOFT_PRUNING_RATIO=0.5,  # fraction of opacity/size-flagged Gaussians pruned during densification
+            FINAL_START_ITERATION=15_000,
+            FINAL_END_ITERATION=30_000,
+            FINAL_INTERVAL=3_000,
+            FINAL_MIN_OPACITY=0.1,
+            FINAL_SCORE_THRESHOLD=0.9,  # tau_p: prune Gaussians whose pruning score exceeds this
+        ),
     ),
     USE_MCMC=False,
     MAX_PRIMITIVES=1_000_000,  # only used when USE_MCMC=True
@@ -94,6 +114,10 @@ class FasterGSTrainer(GuiTrainer):
     @torch.no_grad()
     def setup_gaussians(self, _, dataset: "BaseDataset") -> None:
         """Sets up the model."""
+        if self.USE_MCMC and (self.FASTGS.VCD.USE or self.FASTGS.VCP.USE):
+            raise Framework.TrainingError(
+                "FastGS VCD/VCP densification/pruning only compose with the ADC path; set USE_MCMC=False"
+            )
         dataset.train()
         camera_centers = torch.stack([view.position for view in dataset])
         radius = (
@@ -139,6 +163,13 @@ class FasterGSTrainer(GuiTrainer):
         """Increase the number of used SH coefficients up to a maximum degree."""
         self.model.gaussians.increase_used_sh_degree()
 
+    @torch.no_grad()
+    def _sample_scoring_views(self, dataset: "BaseDataset") -> list:
+        """Randomly samples up to N_SAMPLED_VIEWS training views for FastGS multi-view scoring."""
+        views = list(dataset.train())
+        k = min(self.FASTGS.N_SAMPLED_VIEWS, len(views))
+        return random.sample(views, k)
+
     @training_callback(
         priority=100,
         start_iteration="DENSIFICATION_START_ITERATION",
@@ -153,10 +184,23 @@ class FasterGSTrainer(GuiTrainer):
                 min_opacity=0.005, cap_max=self.MAX_PRIMITIVES
             )
         else:
+            # FastGS VCD: gate densification by the multi-view consistency importance score
+            importance_score = None
+            if self.FASTGS.VCD.USE:
+                views = self._sample_scoring_views(dataset)
+                importance_score, _ = self.renderer.compute_multiview_scores(
+                    views,
+                    self.FASTGS.LOSS_THRESHOLD,
+                    self.LOSS.LAMBDA_L1,
+                    self.LOSS.LAMBDA_DSSIM,
+                    need_importance=True,
+                )
             self.model.gaussians.adaptive_density_control(
                 self.DENSIFICATION_GRAD_THRESHOLD,
                 0.005,
                 iteration > self.OPACITY_RESET_INTERVAL,
+                importance_score=importance_score,
+                importance_threshold=self.FASTGS.VCD.IMPORTANCE_THRESHOLD,
             )
 
             if (
