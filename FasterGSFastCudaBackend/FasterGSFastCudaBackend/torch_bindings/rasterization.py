@@ -187,3 +187,34 @@ def update_pruning_scores(
         sh_coefficients_rest,
         *rasterizer_settings.as_tuple(),
     )
+
+
+def update_metric_counts(
+    counts: torch.Tensor,
+    metric_map: torch.Tensor,
+    means: torch.Tensor,
+    scales: torch.Tensor,
+    rotations: torch.Tensor,
+    opacities: torch.Tensor,
+    sh_coefficients_0: torch.Tensor,
+    sh_coefficients_rest: torch.Tensor,
+    rasterizer_settings: RasterizerSettings,
+) -> torch.Tensor:
+    """Accumulates FastGS multi-view consistency counts into `counts` for a single view.
+
+    For every Gaussian that contributes to a high-error pixel (`metric_map == 1`), its
+    per-primitive entry in `counts` is incremented by one. `metric_map` must be a contiguous
+    int32 CUDA tensor of length height*width in row-major (y*width+x) order; `counts` a
+    float32 CUDA tensor of length n_primitives, accumulated in place across views.
+    """
+    return _C.metric_counts(
+        counts,
+        metric_map,
+        means,
+        scales,
+        rotations,
+        opacities,
+        sh_coefficients_0,
+        sh_coefficients_rest,
+        *rasterizer_settings.as_tuple(),
+    )

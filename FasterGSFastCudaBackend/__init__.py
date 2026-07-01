@@ -16,6 +16,7 @@ try:
         diff_rasterize,
         rasterize,
         update_pruning_scores,
+        update_metric_counts,
         RasterizerSettings,
     )
     from .FasterGSFastCudaBackend.torch_bindings.adam import FusedAdam
@@ -29,6 +30,7 @@ try:
         "diff_rasterize",
         "rasterize",
         "update_pruning_scores",
+        "update_metric_counts",
         "RasterizerSettings",
         "FusedAdam",
         "update_3d_filter",
