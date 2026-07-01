@@ -1,13 +1,13 @@
 import torch
 
-from FasterGSCudaBackend import _C
+from FasterGSFastCudaBackend import _C
 
 
 def relocation_adjustment(
     old_opacities: torch.Tensor,
     old_scales: torch.Tensor,
     n_samples_per_primitive: torch.Tensor,
-) -> 'tuple[torch.Tensor, torch.Tensor]':
+) -> "tuple[torch.Tensor, torch.Tensor]":
     return _C.relocation_adjustment(old_opacities, old_scales, n_samples_per_primitive)
 
 
@@ -18,5 +18,9 @@ def add_noise(
     means: torch.Tensor,
     current_lr: float,
 ) -> None:
-    random_samples = torch.randn_like(means)  # TODO: could be fused into the CUDA kernel
-    _C.add_noise(raw_scales, raw_rotations, raw_opacities, random_samples, means, current_lr)
+    random_samples = torch.randn_like(
+        means
+    )  # TODO: could be fused into the CUDA kernel
+    _C.add_noise(
+        raw_scales, raw_rotations, raw_opacities, random_samples, means, current_lr
+    )

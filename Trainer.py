@@ -7,9 +7,13 @@ from Datasets.Base import BaseDataset
 from Datasets.utils import BasicPointCloud, apply_background_color
 from Logging import Logger
 from Methods.Base.GuiTrainer import GuiTrainer
-from Methods.Base.utils import pre_training_callback, training_callback, post_training_callback
-from Methods.FasterGS.Loss import FasterGSLoss
-from Methods.FasterGS.utils import enable_expandable_segments, carve
+from Methods.Base.utils import (
+    pre_training_callback,
+    training_callback,
+    post_training_callback,
+)
+from Methods.FasterGSFast.Loss import FasterGSLoss
+from Methods.FasterGSFast.utils import enable_expandable_segments, carve
 from Optim.Samplers.DatasetSamplers import DatasetSampler
 
 
@@ -73,33 +77,51 @@ class FasterGSTrainer(GuiTrainer):
         if not Framework.config.TRAINING.GUI.ACTIVATE:
             if enable_expandable_segments():
                 self.requires_empty_cache = False
-                Logger.log_info('using "expandable_segments:True" with the torch cuda memory allocator')
+                Logger.log_info(
+                    'using "expandable_segments:True" with the torch cuda memory allocator'
+                )
         super().__init__(**kwargs)
         self.train_sampler = None
         self.loss = None
 
     @pre_training_callback(priority=50)
     @torch.no_grad()
-    def create_sampler(self, _, dataset: 'BaseDataset') -> None:
+    def create_sampler(self, _, dataset: "BaseDataset") -> None:
         """Creates the sampler."""
         self.train_sampler = DatasetSampler(dataset=dataset.train(), random=True)
 
     @pre_training_callback(priority=40)
     @torch.no_grad()
-    def setup_gaussians(self, _, dataset: 'BaseDataset') -> None:
+    def setup_gaussians(self, _, dataset: "BaseDataset") -> None:
         """Sets up the model."""
         dataset.train()
         camera_centers = torch.stack([view.position for view in dataset])
-        radius = (1.1 * torch.max(torch.linalg.norm(camera_centers - torch.mean(camera_centers, dim=0), dim=1))).item()
-        Logger.log_info(f'training cameras extent: {radius:.2f}')
+        radius = (
+            1.1
+            * torch.max(
+                torch.linalg.norm(
+                    camera_centers - torch.mean(camera_centers, dim=0), dim=1
+                )
+            )
+        ).item()
+        Logger.log_info(f"training cameras extent: {radius:.2f}")
 
         if dataset.point_cloud is not None and not self.RANDOM_INITIALIZATION.FORCE:
             point_cloud = dataset.point_cloud
         else:
-            samples = torch.rand((self.RANDOM_INITIALIZATION.N_POINTS, 3), dtype=torch.float32, device=Framework.config.GLOBAL.DEFAULT_DEVICE)
+            samples = torch.rand(
+                (self.RANDOM_INITIALIZATION.N_POINTS, 3),
+                dtype=torch.float32,
+                device=Framework.config.GLOBAL.DEFAULT_DEVICE,
+            )
             positions = samples * dataset.bounding_box.size + dataset.bounding_box.min
             if self.RANDOM_INITIALIZATION.ENABLE_CARVING:
-                positions = carve(positions, dataset, self.RANDOM_INITIALIZATION.CARVING_IN_ALL_FRUSTUMS, self.RANDOM_INITIALIZATION.CARVING_ENFORCE_ALPHA)
+                positions = carve(
+                    positions,
+                    dataset,
+                    self.RANDOM_INITIALIZATION.CARVING_IN_ALL_FRUSTUMS,
+                    self.RANDOM_INITIALIZATION.CARVING_ENFORCE_ALPHA,
+                )
             point_cloud = BasicPointCloud(positions)
         self.model.gaussians.initialize_from_point_cloud(point_cloud, self.USE_MCMC)
         self.model.gaussians.training_setup(self, radius)
@@ -117,19 +139,38 @@ class FasterGSTrainer(GuiTrainer):
         """Increase the number of used SH coefficients up to a maximum degree."""
         self.model.gaussians.increase_used_sh_degree()
 
-    @training_callback(priority=100, start_iteration='DENSIFICATION_START_ITERATION', end_iteration='DENSIFICATION_END_ITERATION', iteration_stride='DENSIFICATION_INTERVAL')
+    @training_callback(
+        priority=100,
+        start_iteration="DENSIFICATION_START_ITERATION",
+        end_iteration="DENSIFICATION_END_ITERATION",
+        iteration_stride="DENSIFICATION_INTERVAL",
+    )
     @torch.no_grad()
-    def densify(self, iteration: int, dataset: 'BaseDataset') -> None:
+    def densify(self, iteration: int, dataset: "BaseDataset") -> None:
         """Apply densification."""
         if self.USE_MCMC:
-            self.model.gaussians.mcmc_densification(min_opacity=0.005, cap_max=self.MAX_PRIMITIVES)
+            self.model.gaussians.mcmc_densification(
+                min_opacity=0.005, cap_max=self.MAX_PRIMITIVES
+            )
         else:
-            self.model.gaussians.adaptive_density_control(self.DENSIFICATION_GRAD_THRESHOLD, 0.005, iteration > self.OPACITY_RESET_INTERVAL)
+            self.model.gaussians.adaptive_density_control(
+                self.DENSIFICATION_GRAD_THRESHOLD,
+                0.005,
+                iteration > self.OPACITY_RESET_INTERVAL,
+            )
 
-            if self.SPEEDYSPLAT_PRUNING.USE and self.SPEEDYSPLAT_PRUNING.START_ITERATION <= iteration < self.SPEEDYSPLAT_PRUNING.END_ITERATION and iteration % self.SPEEDYSPLAT_PRUNING.INTERVAL == 0:
+            if (
+                self.SPEEDYSPLAT_PRUNING.USE
+                and self.SPEEDYSPLAT_PRUNING.START_ITERATION
+                <= iteration
+                < self.SPEEDYSPLAT_PRUNING.END_ITERATION
+                and iteration % self.SPEEDYSPLAT_PRUNING.INTERVAL == 0
+            ):
                 # Soft Pruning (see https://github.com/j-alex-hanson/speedy-splat/blob/e480b2c3944e4aac4e251307216fe1b8d6a0afc3/train.py#L178-L188)
                 scores = self.renderer.compute_pruning_scores(dataset.train())
-                self.model.gaussians.importance_pruning(scores, pruning_ratio=self.SPEEDYSPLAT_PRUNING.SOFT_PRUNING_RATIO)
+                self.model.gaussians.importance_pruning(
+                    scores, pruning_ratio=self.SPEEDYSPLAT_PRUNING.SOFT_PRUNING_RATIO
+                )
 
             if iteration < self.DENSIFICATION_END_ITERATION:
                 self.model.gaussians.reset_densification_info()
@@ -138,37 +179,57 @@ class FasterGSTrainer(GuiTrainer):
         if self.FILTER_3D.USE:
             self.model.gaussians.compute_3d_filter(dataset.train())
 
-    @training_callback(priority=99, end_iteration='MORTON_ORDERING_END_ITERATION', iteration_stride='MORTON_ORDERING_INTERVAL')
+    @training_callback(
+        priority=99,
+        end_iteration="MORTON_ORDERING_END_ITERATION",
+        iteration_stride="MORTON_ORDERING_INTERVAL",
+    )
     @torch.no_grad()
     def morton_ordering(self, *_) -> None:
         """Apply morton ordering to all Gaussian parameters and their optimizer states."""
         self.model.gaussians.apply_morton_ordering()
 
-    @training_callback(active='FILTER_3D.USE', priority=95, start_iteration='DENSIFICATION_END_ITERATION', iteration_stride=100)
+    @training_callback(
+        active="FILTER_3D.USE",
+        priority=95,
+        start_iteration="DENSIFICATION_END_ITERATION",
+        iteration_stride=100,
+    )
     @torch.no_grad()
-    def recompute_3d_filter(self, iteration: int, dataset: 'BaseDataset') -> None:
+    def recompute_3d_filter(self, iteration: int, dataset: "BaseDataset") -> None:
         """Recompute 3D filter."""
         if self.DENSIFICATION_END_ITERATION < iteration < self.NUM_ITERATIONS - 100:
             self.model.gaussians.compute_3d_filter(dataset.train())
 
-    @training_callback(priority=90, start_iteration='OPACITY_RESET_INTERVAL', end_iteration='DENSIFICATION_END_ITERATION', iteration_stride='OPACITY_RESET_INTERVAL')
+    @training_callback(
+        priority=90,
+        start_iteration="OPACITY_RESET_INTERVAL",
+        end_iteration="DENSIFICATION_END_ITERATION",
+        iteration_stride="OPACITY_RESET_INTERVAL",
+    )
     @torch.no_grad()
     def reset_opacities(self, *_) -> None:
         """Reset opacities."""
         if not self.USE_MCMC:
             self.model.gaussians.reset_opacities()
 
-    @training_callback(priority=90, start_iteration='EXTRA_OPACITY_RESET_ITERATION', end_iteration='EXTRA_OPACITY_RESET_ITERATION')
+    @training_callback(
+        priority=90,
+        start_iteration="EXTRA_OPACITY_RESET_ITERATION",
+        end_iteration="EXTRA_OPACITY_RESET_ITERATION",
+    )
     @torch.no_grad()
-    def reset_opacities_extra(self, _, dataset: 'BaseDataset') -> None:
+    def reset_opacities_extra(self, _, dataset: "BaseDataset") -> None:
         """Reset opacities one additional time when using a white background."""
         # original implementation only supports black or white background, this is an attempt to make it work with any color
         if not self.USE_MCMC and dataset.default_camera.background_color.sum() != 0.0:
-            Logger.log_info('resetting opacities one additional time because using non-black background')
+            Logger.log_info(
+                "resetting opacities one additional time because using non-black background"
+            )
             self.model.gaussians.reset_opacities()
 
     @training_callback(priority=80)
-    def training_iteration(self, iteration: int, dataset: 'BaseDataset') -> None:
+    def training_iteration(self, iteration: int, dataset: "BaseDataset") -> None:
         """Performs a training step without actually doing the optimizer step."""
         # init modes
         self.model.train()
@@ -177,12 +238,17 @@ class FasterGSTrainer(GuiTrainer):
         # update learning rate
         self.model.gaussians.update_learning_rate(iteration + 1)
         # get random view
-        view = self.train_sampler.get(dataset=dataset)['view']
+        view = self.train_sampler.get(dataset=dataset)["view"]
         # render
-        bg_color = torch.rand_like(view.camera.background_color) if self.USE_RANDOM_BACKGROUND_COLOR else view.camera.background_color
+        bg_color = (
+            torch.rand_like(view.camera.background_color)
+            if self.USE_RANDOM_BACKGROUND_COLOR
+            else view.camera.background_color
+        )
         image = self.renderer.render_image_training(
             view=view,
-            update_densification_info=not self.USE_MCMC and iteration < self.DENSIFICATION_END_ITERATION,
+            update_densification_info=not self.USE_MCMC
+            and iteration < self.DENSIFICATION_END_ITERATION,
             bg_color=bg_color,
         )
         # calculate loss
@@ -200,52 +266,73 @@ class FasterGSTrainer(GuiTrainer):
         if self.model.ppisp is not None:
             self.model.ppisp.step()
 
-    @training_callback(active='SPEEDYSPLAT_PRUNING.USE', priority=70, start_iteration='SPEEDYSPLAT_PRUNING.START_ITERATION', end_iteration='SPEEDYSPLAT_PRUNING.END_ITERATION', iteration_stride='SPEEDYSPLAT_PRUNING.INTERVAL')
+    @training_callback(
+        active="SPEEDYSPLAT_PRUNING.USE",
+        priority=70,
+        start_iteration="SPEEDYSPLAT_PRUNING.START_ITERATION",
+        end_iteration="SPEEDYSPLAT_PRUNING.END_ITERATION",
+        iteration_stride="SPEEDYSPLAT_PRUNING.INTERVAL",
+    )
     @torch.no_grad()
-    def hard_pruning(self, iteration: int, dataset: 'BaseDataset') -> None:
+    def hard_pruning(self, iteration: int, dataset: "BaseDataset") -> None:
         """Speedy-Splat Hard Pruning (see https://github.com/j-alex-hanson/speedy-splat/blob/e480b2c3944e4aac4e251307216fe1b8d6a0afc3/train.py#L202-L213)."""
         if iteration >= self.DENSIFICATION_END_ITERATION + self.DENSIFICATION_INTERVAL:
             scores = self.renderer.compute_pruning_scores(dataset.train())
-            self.model.gaussians.importance_pruning(scores, pruning_ratio=self.SPEEDYSPLAT_PRUNING.HARD_PRUNING_RATIO)
+            self.model.gaussians.importance_pruning(
+                scores, pruning_ratio=self.SPEEDYSPLAT_PRUNING.HARD_PRUNING_RATIO
+            )
 
-    @training_callback(active='WANDB.ACTIVATE', priority=10, iteration_stride='WANDB.INTERVAL')
+    @training_callback(
+        active="WANDB.ACTIVATE", priority=10, iteration_stride="WANDB.INTERVAL"
+    )
     @torch.no_grad()
-    def log_wandb(self, iteration: int, dataset: 'BaseDataset') -> None:
+    def log_wandb(self, iteration: int, dataset: "BaseDataset") -> None:
         """Adds Gaussian count to default Weights & Biases logging."""
-        Framework.wandb.log({
-            '#Gaussians': self.model.gaussians.means.shape[0]
-        }, step=iteration)
+        Framework.wandb.log(
+            {"#Gaussians": self.model.gaussians.means.shape[0]}, step=iteration
+        )
         # default logging
         super().log_wandb(iteration, dataset)
 
     @post_training_callback(priority=1000)
     @torch.no_grad()
-    def finalize(self, _, dataset: 'BaseDataset') -> None:
+    def finalize(self, _, dataset: "BaseDataset") -> None:
         """Clean up after training."""
-        n_gaussians = self.model.gaussians.training_cleanup(min_opacity=self.MIN_OPACITY_AFTER_TRAINING)
-        Logger.log_info(f'final number of Gaussians: {n_gaussians:,}')
-        with open(str(self.output_directory / 'n_gaussians.txt'), 'w') as n_gaussians_file:
+        n_gaussians = self.model.gaussians.training_cleanup(
+            min_opacity=self.MIN_OPACITY_AFTER_TRAINING
+        )
+        Logger.log_info(f"final number of Gaussians: {n_gaussians:,}")
+        with open(
+            str(self.output_directory / "n_gaussians.txt"), "w"
+        ) as n_gaussians_file:
             n_gaussians_file.write(
-                f'Final number of Gaussians: {n_gaussians:,}\n'
-                f'\n'
-                f'N_Gaussians:{n_gaussians}'
+                f"Final number of Gaussians: {n_gaussians:,}\n"
+                f"\n"
+                f"N_Gaussians:{n_gaussians}"
             )
-        if self.model.ppisp is not None and self.model.ppisp.config.controller_distillation:
-            Logger.log_info(f'distilling PPISP controller')
+        if (
+            self.model.ppisp is not None
+            and self.model.ppisp.config.controller_distillation
+        ):
+            Logger.log_info(f"distilling PPISP controller")
             with torch.enable_grad():
                 self.model.train()
                 dataset.train()
                 self.loss.train()
-                for _ in Logger.log_progress(range(self.model.ppisp.config.controller_training_steps)):
+                for _ in Logger.log_progress(
+                    range(self.model.ppisp.config.controller_training_steps)
+                ):
                     # get random view
-                    view = self.train_sampler.get(dataset=dataset)['view']
+                    view = self.train_sampler.get(dataset=dataset)["view"]
                     # render
                     image = self.renderer.ppisp_controller_distillation(view=view)
                     # calculate loss
                     # compose gt with background color if needed  # FIXME: integrate into data model
                     rgb_gt = view.rgb
                     if (alpha_gt := view.alpha) is not None:
-                        rgb_gt = apply_background_color(rgb_gt, alpha_gt, view.camera.background_color)
+                        rgb_gt = apply_background_color(
+                            rgb_gt, alpha_gt, view.camera.background_color
+                        )
                     loss = self.loss(image, rgb_gt)
                     # backward
                     loss.backward()

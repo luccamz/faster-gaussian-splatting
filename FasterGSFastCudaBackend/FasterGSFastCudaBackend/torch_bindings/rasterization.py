@@ -2,14 +2,16 @@ from typing import NamedTuple, Any
 import torch
 from torch.autograd.function import once_differentiable
 
-from FasterGSCudaBackend import _C
+from FasterGSFastCudaBackend import _C
 
 
 class RasterizerSettings(NamedTuple):
     w2c: torch.Tensor  # affine transformation from model/world space to view space
     cam_position: torch.Tensor  # camera position in world space
     bg_color: torch.Tensor  # background color in RGB format
-    active_sh_bases: int  # number of spherical harmonics bases to use for color computation
+    active_sh_bases: (
+        int  # number of spherical harmonics bases to use for color computation
+    )
     width: int  # width of the image plane in pixels
     height: int  # height of the image plane in pixels
     focal_x: float  # focal length in x direction in pixels
@@ -53,8 +55,13 @@ class _Rasterize(torch.autograd.Function):
     ) -> torch.Tensor:
         (
             image,
-            primitive_buffers, tile_buffers, instance_buffers, bucket_buffers,
-            n_instances, n_buckets, instance_primitive_indices_selector
+            primitive_buffers,
+            tile_buffers,
+            instance_buffers,
+            bucket_buffers,
+            n_instances,
+            n_buckets,
+            instance_primitive_indices_selector,
         ) = _C.forward(
             means,
             scales,
@@ -87,10 +94,14 @@ class _Rasterize(torch.autograd.Function):
     def backward(
         ctx: Any,
         grad_image: torch.Tensor,
-    ) -> 'tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None]':
+    ) -> "tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None]":
         (
-            grad_means, grad_scales, grad_rotations, grad_opacities,
-            grad_sh_coefficients_0, grad_sh_coefficients_rest
+            grad_means,
+            grad_scales,
+            grad_rotations,
+            grad_opacities,
+            grad_sh_coefficients_0,
+            grad_sh_coefficients_rest,
         ) = _C.backward(
             ctx.densification_info,
             grad_image,

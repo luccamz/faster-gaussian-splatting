@@ -1,6 +1,6 @@
 import torch
 
-from FasterGSCudaBackend import _C
+from FasterGSFastCudaBackend import _C
 
 
 def update_3d_filter(
