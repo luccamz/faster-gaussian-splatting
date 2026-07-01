@@ -7,7 +7,7 @@ import torch
 import Framework
 from Cameras.Perspective import PerspectiveCamera
 from Datasets.Base import BaseDataset
-from Datasets.utils import View
+from Datasets.utils import View, apply_background_color
 from Logging import Logger
 from Methods.Base.Renderer import BaseModel
 from Methods.Base.Renderer import BaseRenderer
@@ -16,8 +16,10 @@ from Methods.FasterGSFast.FasterGSFastCudaBackend import (
     diff_rasterize,
     rasterize,
     update_pruning_scores,
+    update_metric_counts,
     RasterizerSettings,
 )
+from Optim.Losses.DSSIM import fused_dssim
 
 
 def extract_settings(
@@ -206,6 +208,93 @@ class FasterGSRenderer(BaseRenderer):
                 ),
             )
         return scores
+
+    @torch.no_grad()
+    def compute_multiview_scores(
+        self,
+        views: 'list[View]',
+        loss_thresh: float,
+        lambda_l1: float,
+        lambda_dssim: float,
+        need_importance: bool = True,
+    ) -> 'tuple[torch.Tensor | None, torch.Tensor]':
+        """Computes FastGS multi-view consistency scores over the given sampled views.
+
+        For each view the scene is rendered, a per-pixel L1 error map is thresholded into a
+        high-error mask (Eqs 6-8), and `update_metric_counts` accumulates, per Gaussian, the
+        number of high-error pixels it contributes to. Returns:
+          - importance (s_d, Eq 9): per-Gaussian floor-average of high-error counts across
+            views; used to gate VCD densification. `None` when `need_importance` is False.
+          - pruning (s_p, Eq 11): min-max normalized sum of (per-view photometric loss * counts);
+            used by VCP pruning.
+        Uses `@torch.no_grad()` (not inference_mode) so the DSSIM autograd op can run.
+        """
+        gaussians = self.model.gaussians
+        n_primitives = gaussians.means.shape[0]
+        device = gaussians.means.device
+        accum_counts = (
+            torch.zeros(n_primitives, device=device, dtype=torch.float32)
+            if need_importance
+            else None
+        )
+        accum_score = torch.zeros(n_primitives, device=device, dtype=torch.float32)
+        n_views = 0
+        for view in views:
+            n_views += 1
+            settings = extract_settings(
+                view,
+                gaussians.active_sh_bases,
+                view.camera.background_color,
+                self.PROPER_ANTIALIASING,
+            )
+            # render the current view (no-grad inference rasterizer, unclamped to match training domain)
+            image = rasterize(
+                means=gaussians.means,
+                scales=gaussians.raw_scales,
+                rotations=gaussians.raw_rotations,
+                opacities=gaussians.raw_opacities,
+                sh_coefficients_0=gaussians.sh_coefficients_0,
+                sh_coefficients_rest=gaussians.sh_coefficients_rest,
+                rasterizer_settings=settings,
+                to_chw=True,
+                clamp_output=False,
+            )
+            # ground truth, composited onto the same background if it carries an alpha channel
+            rgb_gt = view.rgb
+            if (alpha_gt := view.alpha) is not None:
+                rgb_gt = apply_background_color(rgb_gt, alpha_gt, view.camera.background_color)
+            # per-pixel L1 over channels -> min-max normalized -> high-error mask (Eqs 6-8)
+            l1_map = (image - rgb_gt).abs().mean(dim=0)
+            l1_min = l1_map.min()
+            l1_norm = (l1_map - l1_min) / (l1_map.max() - l1_min).clamp_min(1e-8)
+            metric_map = (l1_norm > loss_thresh).to(torch.int32).reshape(-1).contiguous()
+            # per-Gaussian count of high-error pixels this Gaussian contributes to, this view
+            counts = torch.zeros(n_primitives, device=device, dtype=torch.float32)
+            update_metric_counts(
+                counts=counts,
+                metric_map=metric_map,
+                means=gaussians.means,
+                scales=gaussians.raw_scales,
+                rotations=gaussians.raw_rotations,
+                opacities=gaussians.raw_opacities,
+                sh_coefficients_0=gaussians.sh_coefficients_0,
+                sh_coefficients_rest=gaussians.sh_coefficients_rest,
+                rasterizer_settings=settings,
+            )
+            if need_importance:
+                accum_counts += counts
+            # photometric loss weighting for the pruning score (Eqs 10-11)
+            e_photo = lambda_l1 * torch.nn.functional.l1_loss(image, rgb_gt) + lambda_dssim * fused_dssim(image, rgb_gt)
+            accum_score += e_photo * counts
+        # importance = floor(mean counts) (Eq 9); pruning = min-max normalized weighted score (Eq 11)
+        importance = (
+            torch.div(accum_counts, max(n_views, 1), rounding_mode='floor')
+            if need_importance
+            else None
+        )
+        score_min = accum_score.min()
+        pruning = (accum_score - score_min) / (accum_score.max() - score_min).clamp_min(1e-8)
+        return importance, pruning
 
     def postprocess_outputs(
         self, outputs: dict[str, torch.Tensor], *_
