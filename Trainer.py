@@ -43,7 +43,7 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
             IMPORTANCE_THRESHOLD=5,  # tau_d: min avg high-error-pixel count for a Gaussian to be densified
         ),
         VCP=Framework.ConfigParameterList(
-            USE=False,  # wired in a later step; declared here for a single config surface
+            USE=False,
             SOFT_PRUNING_RATIO=0.5,  # fraction of opacity/size-flagged Gaussians pruned during densification
             FINAL_START_ITERATION=15_000,
             FINAL_END_ITERATION=30_000,
@@ -118,6 +118,10 @@ class FasterGSTrainer(GuiTrainer):
             raise Framework.TrainingError(
                 "FastGS VCD/VCP densification/pruning only compose with the ADC path; set USE_MCMC=False"
             )
+        if self.FASTGS.VCP.USE and self.SPEEDYSPLAT_PRUNING.USE:
+            raise Framework.TrainingError(
+                "FastGS VCP and Speedy-Splat pruning are mutually exclusive; enable only one"
+            )
         dataset.train()
         camera_centers = torch.stack([view.position for view in dataset])
         radius = (
@@ -184,16 +188,17 @@ class FasterGSTrainer(GuiTrainer):
                 min_opacity=0.005, cap_max=self.MAX_PRIMITIVES
             )
         else:
-            # FastGS VCD: gate densification by the multi-view consistency importance score
+            # FastGS VCD/VCP: compute multi-view consistency scores once, feed both densify + soft-prune
             importance_score = None
-            if self.FASTGS.VCD.USE:
+            pruning_score = None
+            if self.FASTGS.VCD.USE or self.FASTGS.VCP.USE:
                 views = self._sample_scoring_views(dataset)
-                importance_score, _ = self.renderer.compute_multiview_scores(
+                importance_score, pruning_score = self.renderer.compute_multiview_scores(
                     views,
                     self.FASTGS.LOSS_THRESHOLD,
                     self.LOSS.LAMBDA_L1,
                     self.LOSS.LAMBDA_DSSIM,
-                    need_importance=True,
+                    need_importance=self.FASTGS.VCD.USE,
                 )
             self.model.gaussians.adaptive_density_control(
                 self.DENSIFICATION_GRAD_THRESHOLD,
@@ -201,6 +206,8 @@ class FasterGSTrainer(GuiTrainer):
                 iteration > self.OPACITY_RESET_INTERVAL,
                 importance_score=importance_score,
                 importance_threshold=self.FASTGS.VCD.IMPORTANCE_THRESHOLD,
+                pruning_score=pruning_score if self.FASTGS.VCP.USE else None,
+                soft_pruning_ratio=self.FASTGS.VCP.SOFT_PRUNING_RATIO,
             )
 
             if (
@@ -325,6 +332,30 @@ class FasterGSTrainer(GuiTrainer):
             self.model.gaussians.importance_pruning(
                 scores, pruning_ratio=self.SPEEDYSPLAT_PRUNING.HARD_PRUNING_RATIO
             )
+
+    @training_callback(
+        active="FASTGS.VCP.USE",
+        priority=70,
+        start_iteration="FASTGS.VCP.FINAL_START_ITERATION",
+        end_iteration="FASTGS.VCP.FINAL_END_ITERATION",
+        iteration_stride="FASTGS.VCP.FINAL_INTERVAL",
+    )
+    @torch.no_grad()
+    def vcp_final_prune(self, iteration: int, dataset: "BaseDataset") -> None:
+        """FastGS VCP final-stage pruning: post-densification, every FINAL_INTERVAL iters, remove
+        Gaussians with low opacity or high pruning score (low multi-view contribution)."""
+        _, pruning_score = self.renderer.compute_multiview_scores(
+            self._sample_scoring_views(dataset),
+            self.FASTGS.LOSS_THRESHOLD,
+            self.LOSS.LAMBDA_L1,
+            self.LOSS.LAMBDA_DSSIM,
+            need_importance=False,
+        )
+        self.model.gaussians.final_prune_vcp(
+            min_opacity=self.FASTGS.VCP.FINAL_MIN_OPACITY,
+            pruning_score=pruning_score,
+            score_threshold=self.FASTGS.VCP.FINAL_SCORE_THRESHOLD,
+        )
 
     @training_callback(
         active="WANDB.ACTIVATE", priority=10, iteration_stride="WANDB.INTERVAL"

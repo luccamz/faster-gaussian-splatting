@@ -404,6 +404,8 @@ class Gaussians(torch.nn.Module):
         prune_large_gaussians: bool,
         importance_score: torch.Tensor | None = None,
         importance_threshold: float = 0.0,
+        pruning_score: torch.Tensor | None = None,
+        soft_pruning_ratio: float = 0.5,
     ) -> None:
         """Densify Gaussians and prune those that are not visible or too large.
 
@@ -411,6 +413,12 @@ class Gaussians(torch.nn.Module):
         the multi-view consistency importance score: only Gaussians that consistently lie in
         high-error regions across sampled views (score > `importance_threshold`) are densified.
         Passing `None` reproduces the original gradient-only densification behavior.
+
+        When `pruning_score` is provided (FastGS VCP soft pruning), the opacity/oversized prune
+        candidates are pruned probabilistically instead of all at once: only ~`soft_pruning_ratio`
+        of them are removed, sampled with a bias toward Gaussians with high pruning score (i.e. low
+        multi-view reconstruction contribution). Split originals and degenerate Gaussians are always
+        pruned. Passing `None` reproduces the original deterministic prune.
         """
         densification_mask = self.densification_info[
             1
@@ -489,17 +497,54 @@ class Gaussians(torch.nn.Module):
         self._filter_3d = None
 
         # prune
-        prune_mask = torch.cat(
+        # mandatory: split originals (replaced by their children) and degenerate Gaussians
+        mandatory_prune = torch.cat(
             [split_mask, torch.zeros(n_new_gaussians, dtype=torch.bool, device="cuda")]
         )
-        prune_mask |= self._opacities.flatten() < math.log(
+        mandatory_prune |= self._rotations.mul(self._rotations).sum(dim=1) < 1e-8
+        # opacity / oversized candidates
+        candidate_prune = self._opacities.flatten() < math.log(
             min_opacity / (1 - min_opacity)
         )
-        prune_mask |= self._rotations.mul(self._rotations).sum(dim=1) < 1e-8
         if prune_large_gaussians:
-            prune_mask |= self._scales.max(dim=1).values > math.log(
+            candidate_prune |= self._scales.max(dim=1).values > math.log(
                 0.1 * self.training_cameras_extent
             )
+        if pruning_score is None:
+            prune_mask = mandatory_prune | candidate_prune
+        else:
+            # FastGS VCP soft pruning: probabilistically remove ~soft_pruning_ratio of the
+            # opacity/size candidates, biased toward high pruning score. New Gaussians (indices
+            # beyond the score tensor) get zero weight and are never soft-pruned.
+            n_points = self._opacities.shape[0]
+            n_to_remove = int(soft_pruning_ratio * candidate_prune.sum().item())
+            n_to_remove = min(n_to_remove, pruning_score.shape[0])  # cap to # of scored Gaussians
+            selected = torch.zeros(n_points, dtype=torch.bool, device="cuda")
+            if n_to_remove > 0:
+                weights = torch.zeros(n_points, dtype=torch.float32, device="cuda")
+                weights[: pruning_score.shape[0]] = 1.0 / (1e-6 + (1.0 - pruning_score))
+                sampled_indices = torch.multinomial(
+                    weights, n_to_remove, replacement=False
+                )
+                selected[sampled_indices] = True
+            prune_mask = mandatory_prune | (candidate_prune & selected)
+        self.prune(prune_mask)
+
+    def final_prune_vcp(
+        self,
+        min_opacity: float,
+        pruning_score: torch.Tensor,
+        score_threshold: float,
+    ) -> None:
+        """FastGS VCP final-stage pruning (post-densification, applied every few thousand iters).
+
+        Removes Gaussians with low opacity or a high pruning score (i.e. low multi-view
+        reconstruction contribution), along with any degenerate Gaussians. `pruning_score` must
+        be indexed to the current Gaussians (length == current primitive count).
+        """
+        prune_mask = self.opacities.flatten() < min_opacity
+        prune_mask |= pruning_score > score_threshold
+        prune_mask |= self._rotations.mul(self._rotations).sum(dim=1) < 1e-8
         self.prune(prune_mask)
 
     def mcmc_densification(self, min_opacity: float, cap_max: int) -> None:
