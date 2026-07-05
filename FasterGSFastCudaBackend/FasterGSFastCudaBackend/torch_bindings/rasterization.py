@@ -167,6 +167,86 @@ def rasterize(
     )
 
 
+def rasterize_with_buffers(
+    means: torch.Tensor,
+    scales: torch.Tensor,
+    rotations: torch.Tensor,
+    opacities: torch.Tensor,
+    sh_coefficients_0: torch.Tensor,
+    sh_coefficients_rest: torch.Tensor,
+    rasterizer_settings: RasterizerSettings,
+    to_chw: bool,
+    clamp_output: bool = True,
+) -> "tuple[torch.Tensor, tuple]":
+    """Renders a view like `rasterize`, but also returns the intermediate rasterization buffers.
+
+    The returned `buffers` bundle (opaque byte tensors + `n_instances` + the sorted-instance
+    DoubleBuffer selector) can be passed to `count_metric_from_buffers` to compute FastGS metric
+    counts without rebuilding the projection and depth/tile sort for the same view.
+    """
+    (
+        image,
+        primitive_buffers,
+        tile_buffers,
+        instance_buffers,
+        n_instances,
+        instance_primitive_indices_selector,
+    ) = _C.inference_with_buffers(
+        means,
+        scales,
+        rotations,
+        opacities,
+        sh_coefficients_0,
+        sh_coefficients_rest,
+        *rasterizer_settings.as_tuple(),
+        to_chw,
+        clamp_output,
+    )
+    buffers = (
+        primitive_buffers,
+        tile_buffers,
+        instance_buffers,
+        n_instances,
+        instance_primitive_indices_selector,
+    )
+    return image, buffers
+
+
+def count_metric_from_buffers(
+    counts: torch.Tensor,
+    metric_map: torch.Tensor,
+    buffers: tuple,
+    width: int,
+    height: int,
+) -> torch.Tensor:
+    """Accumulates FastGS metric counts for one view, reusing a render's buffers (see
+    `rasterize_with_buffers`). Runs only the counting kernel -- the preprocess, depth/tile sorts and
+    instance-list construction are skipped, since the render already built them for this view.
+    For every Gaussian contributing to a high-error pixel (`metric_map == 1`), its per-primitive entry
+    in `counts` is incremented by one. `counts` is a float32 CUDA tensor of length n_primitives,
+    accumulated in place; `metric_map` a contiguous int32 CUDA tensor of length height*width in
+    row-major (y*width+x) order.
+    """
+    (
+        primitive_buffers,
+        tile_buffers,
+        instance_buffers,
+        n_instances,
+        instance_primitive_indices_selector,
+    ) = buffers
+    return _C.metric_counts_from_buffers(
+        counts,
+        metric_map,
+        primitive_buffers,
+        tile_buffers,
+        instance_buffers,
+        n_instances,
+        instance_primitive_indices_selector,
+        width,
+        height,
+    )
+
+
 def update_pruning_scores(
     scores: torch.Tensor,
     means: torch.Tensor,
@@ -189,32 +269,3 @@ def update_pruning_scores(
     )
 
 
-def update_metric_counts(
-    counts: torch.Tensor,
-    metric_map: torch.Tensor,
-    means: torch.Tensor,
-    scales: torch.Tensor,
-    rotations: torch.Tensor,
-    opacities: torch.Tensor,
-    sh_coefficients_0: torch.Tensor,
-    sh_coefficients_rest: torch.Tensor,
-    rasterizer_settings: RasterizerSettings,
-) -> torch.Tensor:
-    """Accumulates FastGS multi-view consistency counts into `counts` for a single view.
-
-    For every Gaussian that contributes to a high-error pixel (`metric_map == 1`), its
-    per-primitive entry in `counts` is incremented by one. `metric_map` must be a contiguous
-    int32 CUDA tensor of length height*width in row-major (y*width+x) order; `counts` a
-    float32 CUDA tensor of length n_primitives, accumulated in place across views.
-    """
-    return _C.metric_counts(
-        counts,
-        metric_map,
-        means,
-        scales,
-        rotations,
-        opacities,
-        sh_coefficients_0,
-        sh_coefficients_rest,
-        *rasterizer_settings.as_tuple(),
-    )

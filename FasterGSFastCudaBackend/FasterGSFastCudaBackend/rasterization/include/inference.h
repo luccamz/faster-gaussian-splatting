@@ -3,10 +3,11 @@
 #include "buffer_utils.h"
 #include "helper_math.h"
 #include <functional>
+#include <tuple>
 
 namespace faster_gs::rasterization {
 
-    void inference(
+    std::tuple<int, int> inference(
         std::function<char* (size_t)> resize_primitive_buffers,
         std::function<char* (size_t)> resize_tile_buffers,
         std::function<char* (size_t)> resize_instance_buffers,
@@ -51,6 +52,7 @@ namespace faster_gs::rasterization {
         const int width,
         const int height,
         const bool to_chw,
-        const bool clamp_output);
+        const bool clamp_output,
+        int& instance_primitive_indices_selector);
 
 }

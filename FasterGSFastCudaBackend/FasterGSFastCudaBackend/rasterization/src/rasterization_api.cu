@@ -247,6 +247,78 @@ faster_gs::rasterization::inference_wrapper(
     return image;
 }
 
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int>
+faster_gs::rasterization::inference_with_buffers_wrapper(
+    const torch::Tensor& means,
+    const torch::Tensor& scales,
+    const torch::Tensor& rotations,
+    const torch::Tensor& opacities,
+    const torch::Tensor& sh_coefficients_0,
+    const torch::Tensor& sh_coefficients_rest,
+    const torch::Tensor& w2c,
+    const torch::Tensor& cam_position,
+    const torch::Tensor& bg_color,
+    const int active_sh_bases,
+    const int width,
+    const int height,
+    const float focal_x,
+    const float focal_y,
+    const float center_x,
+    const float center_y,
+    const float near_plane,
+    const float far_plane,
+    const bool proper_antialiasing,
+    const bool to_chw,
+    const bool clamp_output)
+{
+    // same as inference_wrapper, but keeps the intermediate buffers alive and returns them (plus
+    // n_instances and the sorted-instance DoubleBuffer selector) so a following metric_counts pass
+    // can reuse the projection + sort instead of rebuilding it
+    const int n_primitives = means.size(0);
+    const int total_sh_bases = sh_coefficients_rest.size(1);
+    const torch::TensorOptions float_options = torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA);
+    const torch::TensorOptions byte_options = torch::TensorOptions().dtype(torch::kByte).device(torch::kCUDA);
+    torch::Tensor image = to_chw ? torch::empty({3, height, width}, float_options) : torch::empty({height, width, 3}, float_options);
+    torch::Tensor primitive_buffers = torch::empty({0}, byte_options);
+    torch::Tensor tile_buffers = torch::empty({0}, byte_options);
+    torch::Tensor instance_buffers = torch::empty({0}, byte_options);
+    const std::function<char*(size_t)> resize_primitive_buffers = resize_function_wrapper(primitive_buffers);
+    const std::function<char*(size_t)> resize_tile_buffers = resize_function_wrapper(tile_buffers);
+    const std::function<char*(size_t)> resize_instance_buffers = resize_function_wrapper(instance_buffers);
+
+    auto [n_instances, instance_primitive_indices_selector] = inference(
+        resize_primitive_buffers,
+        resize_tile_buffers,
+        resize_instance_buffers,
+        reinterpret_cast<float3*>(means.data_ptr<float>()),
+        reinterpret_cast<float3*>(scales.data_ptr<float>()),
+        reinterpret_cast<float4*>(rotations.data_ptr<float>()),
+        opacities.data_ptr<float>(),
+        reinterpret_cast<float3*>(sh_coefficients_0.data_ptr<float>()),
+        reinterpret_cast<float3*>(sh_coefficients_rest.data_ptr<float>()),
+        reinterpret_cast<float4*>(w2c.contiguous().data_ptr<float>()),
+        reinterpret_cast<float3*>(cam_position.contiguous().data_ptr<float>()),
+        reinterpret_cast<float3*>(bg_color.contiguous().data_ptr<float>()),
+        image.data_ptr<float>(),
+        n_primitives,
+        active_sh_bases,
+        total_sh_bases,
+        width,
+        height,
+        focal_x,
+        focal_y,
+        center_x,
+        center_y,
+        near_plane,
+        far_plane,
+        proper_antialiasing,
+        to_chw,
+        clamp_output
+    );
+
+    return {image, primitive_buffers, tile_buffers, instance_buffers, n_instances, instance_primitive_indices_selector};
+}
+
 void
 faster_gs::rasterization::pruning_scores_wrapper(
     torch::Tensor& scores,
@@ -310,64 +382,29 @@ faster_gs::rasterization::pruning_scores_wrapper(
 }
 
 void
-faster_gs::rasterization::metric_counts_wrapper(
+faster_gs::rasterization::metric_counts_from_buffers_wrapper(
     torch::Tensor& counts,
     const torch::Tensor& metric_map,
-    const torch::Tensor& means,
-    const torch::Tensor& scales,
-    const torch::Tensor& rotations,
-    const torch::Tensor& opacities,
-    const torch::Tensor& sh_coefficients_0,
-    const torch::Tensor& sh_coefficients_rest,
-    const torch::Tensor& w2c,
-    const torch::Tensor& cam_position,
-    const torch::Tensor& bg_color,  // unused (counts need no background); kept for RasterizerSettings.as_tuple() uniformity
-    const int active_sh_bases,
+    const torch::Tensor& primitive_buffers,
+    const torch::Tensor& tile_buffers,
+    const torch::Tensor& instance_buffers,
+    const int n_instances,
+    const int instance_primitive_indices_selector,
     const int width,
-    const int height,
-    const float focal_x,
-    const float focal_y,
-    const float center_x,
-    const float center_y,
-    const float near_plane,
-    const float far_plane,
-    const bool proper_antialiasing)
+    const int height)
 {
-    const int n_primitives = means.size(0);
-    const int total_sh_bases = sh_coefficients_rest.size(1);
-    const torch::TensorOptions byte_options = torch::TensorOptions().dtype(torch::kByte).device(torch::kCUDA);
-    torch::Tensor primitive_buffers = torch::empty({0}, byte_options);
-    torch::Tensor tile_buffers = torch::empty({0}, byte_options);
-    torch::Tensor instance_buffers = torch::empty({0}, byte_options);
-    const std::function<char*(size_t)> resize_primitive_buffers = resize_function_wrapper(primitive_buffers);
-    const std::function<char*(size_t)> resize_tile_buffers = resize_function_wrapper(tile_buffers);
-    const std::function<char*(size_t)> resize_instance_buffers = resize_function_wrapper(instance_buffers);
-
-    metric_counts(
-        resize_primitive_buffers,
-        resize_tile_buffers,
-        resize_instance_buffers,
-        reinterpret_cast<float3*>(means.data_ptr<float>()),
-        reinterpret_cast<float3*>(scales.data_ptr<float>()),
-        reinterpret_cast<float4*>(rotations.data_ptr<float>()),
-        opacities.data_ptr<float>(),
-        reinterpret_cast<float3*>(sh_coefficients_0.data_ptr<float>()),
-        reinterpret_cast<float3*>(sh_coefficients_rest.data_ptr<float>()),
-        reinterpret_cast<float4*>(w2c.contiguous().data_ptr<float>()),
-        reinterpret_cast<float3*>(cam_position.contiguous().data_ptr<float>()),
+    // counts is length n_primitives by construction (allocated per-Gaussian by the caller)
+    const int n_primitives = counts.size(0);
+    metric_counts_from_buffers(
+        reinterpret_cast<char*>(primitive_buffers.data_ptr()),
+        reinterpret_cast<char*>(tile_buffers.data_ptr()),
+        reinterpret_cast<char*>(instance_buffers.data_ptr()),
         metric_map.contiguous().data_ptr<int>(),
         counts.data_ptr<float>(),
         n_primitives,
-        active_sh_bases,
-        total_sh_bases,
+        n_instances,
+        instance_primitive_indices_selector,
         width,
-        height,
-        focal_x,
-        focal_y,
-        center_x,
-        center_y,
-        near_plane,
-        far_plane,
-        proper_antialiasing
+        height
     );
 }

@@ -82,6 +82,30 @@ namespace faster_gs::rasterization {
         const bool to_chw,
         const bool clamp_output);
 
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int>
+    inference_with_buffers_wrapper(
+        const torch::Tensor& means,
+        const torch::Tensor& scales,
+        const torch::Tensor& rotations,
+        const torch::Tensor& opacities,
+        const torch::Tensor& sh_coefficients_0,
+        const torch::Tensor& sh_coefficients_rest,
+        const torch::Tensor& w2c,
+        const torch::Tensor& cam_position,
+        const torch::Tensor& bg_color,
+        const int active_sh_bases,
+        const int width,
+        const int height,
+        const float focal_x,
+        const float focal_y,
+        const float center_x,
+        const float center_y,
+        const float near_plane,
+        const float far_plane,
+        const bool proper_antialiasing,
+        const bool to_chw,
+        const bool clamp_output);
+
     void
     pruning_scores_wrapper(
         torch::Tensor& scores,
@@ -106,27 +130,15 @@ namespace faster_gs::rasterization {
         const bool proper_antialiasing);
 
     void
-    metric_counts_wrapper(
+    metric_counts_from_buffers_wrapper(
         torch::Tensor& counts,
         const torch::Tensor& metric_map,
-        const torch::Tensor& means,
-        const torch::Tensor& scales,
-        const torch::Tensor& rotations,
-        const torch::Tensor& opacities,
-        const torch::Tensor& sh_coefficients_0,
-        const torch::Tensor& sh_coefficients_rest,
-        const torch::Tensor& w2c,
-        const torch::Tensor& cam_position,
-        const torch::Tensor& bg_color,  // unused (counts need no background); kept for RasterizerSettings.as_tuple() uniformity
-        const int active_sh_bases,
+        const torch::Tensor& primitive_buffers,
+        const torch::Tensor& tile_buffers,
+        const torch::Tensor& instance_buffers,
+        const int n_instances,
+        const int instance_primitive_indices_selector,
         const int width,
-        const int height,
-        const float focal_x,
-        const float focal_y,
-        const float center_x,
-        const float center_y,
-        const float near_plane,
-        const float far_plane,
-        const bool proper_antialiasing);
+        const int height);
 
 }

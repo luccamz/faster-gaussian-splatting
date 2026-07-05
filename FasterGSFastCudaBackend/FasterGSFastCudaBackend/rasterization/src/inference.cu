@@ -6,9 +6,13 @@
 #include "helper_math.h"
 #include <cub/cub.cuh>
 #include <functional>
+#include <tuple>
 
 // sorting is done separately for depth and tile as proposed in https://github.com/m-schuetz/Splatshop
-void faster_gs::rasterization::inference(
+// returns {n_instances, instance_primitive_indices_selector} so callers that keep the buffers alive
+// (e.g. the scoring pass, which reuses them for metric counting) can reconstruct the sorted instance
+// list without rebuilding it -- mirrors forward()'s buffer-return contract
+std::tuple<int, int> faster_gs::rasterization::inference(
     std::function<char* (size_t)> resize_primitive_buffers,
     std::function<char* (size_t)> resize_tile_buffers,
     std::function<char* (size_t)> resize_instance_buffers,
@@ -131,6 +135,7 @@ void faster_gs::rasterization::inference(
     // with 16x16 tiles, 16 bit keys are sufficient for up to 16M pixels, i.e., 4Kx4K images
     // beyond that, 32 bit keys are needed and for best performance, we template the remaining rasterization steps
     // note that with c++20 one could use a templated lambda to improve readability here
+    int instance_primitive_indices_selector;
     #define RASTERIZE_ARGS \
         resize_instance_buffers, \
         primitive_buffers, \
@@ -146,10 +151,13 @@ void faster_gs::rasterization::inference(
         width, \
         height, \
         to_chw, \
-        clamp_output
+        clamp_output, \
+        instance_primitive_indices_selector
     if (end_bit <= 16) rasterize<ushort>(RASTERIZE_ARGS);
     else rasterize<uint>(RASTERIZE_ARGS);
     #undef RASTERIZE_ARGS
+
+    return {n_instances, instance_primitive_indices_selector};
 }
 
 template <typename KeyT>
@@ -168,7 +176,8 @@ void faster_gs::rasterization::rasterize(
     const int width,
     const int height,
     const bool to_chw,
-    const bool clamp_output)
+    const bool clamp_output,
+    int& instance_primitive_indices_selector)
 {
     char* instance_buffers_blob = resize_instance_buffers(required<InstanceBuffers<KeyT>>(n_instances, end_bit));
     InstanceBuffers<KeyT> instance_buffers = InstanceBuffers<KeyT>::from_blob(instance_buffers_blob, n_instances, end_bit);
@@ -195,6 +204,10 @@ void faster_gs::rasterization::rasterize(
         0, end_bit
     );
     CHECK_CUDA(config::debug, "cub::DeviceRadixSort::SortPairs (tile)")
+
+    // capture which physical DoubleBuffer side holds the sorted indices (matches forward.cu),
+    // so a later metric-counts pass reconstructing from the blob can restore .Current()
+    instance_primitive_indices_selector = instance_buffers.primitive_indices.selector;
 
     if constexpr (!config::debug) cudaStreamSynchronize(memset_stream);
 

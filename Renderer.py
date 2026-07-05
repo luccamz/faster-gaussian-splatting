@@ -15,8 +15,9 @@ from Methods.FasterGSFast.Model import FasterGSModel
 from Methods.FasterGSFast.FasterGSFastCudaBackend import (
     diff_rasterize,
     rasterize,
+    rasterize_with_buffers,
     update_pruning_scores,
-    update_metric_counts,
+    count_metric_from_buffers,
     RasterizerSettings,
 )
 from Optim.Losses.DSSIM import fused_dssim
@@ -221,8 +222,8 @@ class FasterGSRenderer(BaseRenderer):
         """Computes FastGS multi-view consistency scores over the given sampled views.
 
         For each view the scene is rendered, a per-pixel L1 error map is thresholded into a
-        high-error mask (Eqs 6-8), and `update_metric_counts` accumulates, per Gaussian, the
-        number of high-error pixels it contributes to. Returns:
+        high-error mask (Eqs 6-8), and `count_metric_from_buffers` accumulates, per Gaussian, the
+        number of high-error pixels it contributes to (reusing the render's buffers). Returns:
           - importance (s_d, Eq 9): per-Gaussian floor-average of high-error counts across
             views; used to gate VCD densification. `None` when `need_importance` is False.
           - pruning (s_p, Eq 11): min-max normalized sum of (per-view photometric loss * counts);
@@ -247,8 +248,10 @@ class FasterGSRenderer(BaseRenderer):
                 view.camera.background_color,
                 self.PROPER_ANTIALIASING,
             )
-            # render the current view (no-grad inference rasterizer, unclamped to match training domain)
-            image = rasterize(
+            # render the current view (no-grad inference rasterizer, unclamped to match training domain);
+            # keep the rasterization buffers so the metric-count pass below reuses this view's projection
+            # and depth/tile sort instead of rebuilding them
+            image, buffers = rasterize_with_buffers(
                 means=gaussians.means,
                 scales=gaussians.raw_scales,
                 rotations=gaussians.raw_rotations,
@@ -268,18 +271,15 @@ class FasterGSRenderer(BaseRenderer):
             l1_min = l1_map.min()
             l1_norm = (l1_map - l1_min) / (l1_map.max() - l1_min).clamp_min(1e-8)
             metric_map = (l1_norm > loss_thresh).to(torch.int32).reshape(-1).contiguous()
-            # per-Gaussian count of high-error pixels this Gaussian contributes to, this view
+            # per-Gaussian count of high-error pixels this Gaussian contributes to, this view;
+            # reuses the render's buffers (no re-projection / re-sort)
             counts = torch.zeros(n_primitives, device=device, dtype=torch.float32)
-            update_metric_counts(
+            count_metric_from_buffers(
                 counts=counts,
                 metric_map=metric_map,
-                means=gaussians.means,
-                scales=gaussians.raw_scales,
-                rotations=gaussians.raw_rotations,
-                opacities=gaussians.raw_opacities,
-                sh_coefficients_0=gaussians.sh_coefficients_0,
-                sh_coefficients_rest=gaussians.sh_coefficients_rest,
-                rasterizer_settings=settings,
+                buffers=buffers,
+                width=settings.width,
+                height=settings.height,
             )
             if need_importance:
                 accum_counts += counts
