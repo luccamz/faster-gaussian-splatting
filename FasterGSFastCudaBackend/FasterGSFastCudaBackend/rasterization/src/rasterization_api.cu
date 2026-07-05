@@ -135,6 +135,10 @@ faster_gs::rasterization::backward_wrapper(
     torch::Tensor grad_conic_helper = torch::zeros({3, n_primitives}, float_options);
 
     const bool update_densification_info = densification_info.size(0) > 0;
+    // FastGS AbsGS: a 3-row densification_info signals the abs-gradient split channel is active; allocate
+    // a scratch buffer for the homodirectional screen-space gradient (else pass nullptr, no extra work).
+    const bool track_abs_grad = densification_info.size(0) > 2;
+    torch::Tensor grad_mean2d_abs_helper = track_abs_grad ? torch::zeros({n_primitives, 2}, float_options) : torch::empty({0}, float_options);
 
     backward(
         grad_image.contiguous().data_ptr<float>(),
@@ -158,6 +162,7 @@ faster_gs::rasterization::backward_wrapper(
         reinterpret_cast<float3*>(grad_sh_coefficients_0.data_ptr<float>()),
         reinterpret_cast<float3*>(grad_sh_coefficients_rest.data_ptr<float>()),
         reinterpret_cast<float2*>(grad_mean2d_helper.data_ptr<float>()),
+        track_abs_grad ? reinterpret_cast<float2*>(grad_mean2d_abs_helper.data_ptr<float>()) : nullptr,
         grad_conic_helper.data_ptr<float>(),
         update_densification_info ? densification_info.data_ptr<float>() : nullptr,
         n_primitives,

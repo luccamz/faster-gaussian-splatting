@@ -51,6 +51,10 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
             FINAL_MIN_OPACITY=0.1,
             FINAL_SCORE_THRESHOLD=0.9,  # tau_p: prune Gaussians whose pruning score exceeds this
         ),
+        ABSGS=Framework.ConfigParameterList(
+            USE=False,  # absolute-gradient split channel (FastGS AbsGS); only used when USE_MCMC=False
+            GRAD_ABS_THRESHOLD=0.0012,  # tau for the abs-gradient split gate (FastGS grad_abs_thresh)
+        ),
     ),
     USE_MCMC=False,
     MAX_PRIMITIVES=1_000_000,  # only used when USE_MCMC=True
@@ -114,9 +118,9 @@ class FasterGSTrainer(GuiTrainer):
     @torch.no_grad()
     def setup_gaussians(self, _, dataset: "BaseDataset") -> None:
         """Sets up the model."""
-        if self.USE_MCMC and (self.FASTGS.VCD.USE or self.FASTGS.VCP.USE):
+        if self.USE_MCMC and (self.FASTGS.VCD.USE or self.FASTGS.VCP.USE or self.FASTGS.ABSGS.USE):
             raise Framework.TrainingError(
-                "FastGS VCD/VCP densification/pruning only compose with the ADC path; set USE_MCMC=False"
+                "FastGS VCD/VCP/AbsGS densification only compose with the ADC path; set USE_MCMC=False"
             )
         if self.FASTGS.VCP.USE and self.SPEEDYSPLAT_PRUNING.USE:
             raise Framework.TrainingError(
@@ -154,7 +158,7 @@ class FasterGSTrainer(GuiTrainer):
         self.model.gaussians.initialize_from_point_cloud(point_cloud, self.USE_MCMC)
         self.model.gaussians.training_setup(self, radius)
         if not self.USE_MCMC:
-            self.model.gaussians.reset_densification_info()
+            self.model.gaussians.reset_densification_info(track_abs_grad=self.FASTGS.ABSGS.USE)
         if self.FILTER_3D.USE:
             self.model.gaussians.setup_3d_filter(self.FILTER_3D, dataset)
         if self.model.ppisp is not None:
@@ -206,6 +210,7 @@ class FasterGSTrainer(GuiTrainer):
                 iteration > self.OPACITY_RESET_INTERVAL,
                 importance_score=importance_score,
                 importance_threshold=self.FASTGS.VCD.IMPORTANCE_THRESHOLD,
+                abs_grad_threshold=self.FASTGS.ABSGS.GRAD_ABS_THRESHOLD if self.FASTGS.ABSGS.USE else None,
                 pruning_score=pruning_score if self.FASTGS.VCP.USE else None,
                 soft_pruning_ratio=self.FASTGS.VCP.SOFT_PRUNING_RATIO,
             )
@@ -224,7 +229,7 @@ class FasterGSTrainer(GuiTrainer):
                 )
 
             if iteration < self.DENSIFICATION_END_ITERATION:
-                self.model.gaussians.reset_densification_info()
+                self.model.gaussians.reset_densification_info(track_abs_grad=self.FASTGS.ABSGS.USE)
         if self.requires_empty_cache:
             torch.cuda.empty_cache()
         if self.FILTER_3D.USE:

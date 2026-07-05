@@ -392,9 +392,10 @@ class Gaussians(torch.nn.Module):
         if self._filter_3d is not None:
             self._filter_3d = self._filter_3d[ordering].contiguous()
 
-    def reset_densification_info(self):
+    def reset_densification_info(self, track_abs_grad: bool = False):
+        # 3 rows when AbsGS is active: [visibility count, gradient norm, abs-gradient norm (split channel)]
         self._densification_info = torch.zeros(
-            (2, self._means.shape[0]), dtype=torch.float32, device="cuda"
+            (3 if track_abs_grad else 2, self._means.shape[0]), dtype=torch.float32, device="cuda"
         )
 
     def adaptive_density_control(
@@ -404,6 +405,7 @@ class Gaussians(torch.nn.Module):
         prune_large_gaussians: bool,
         importance_score: torch.Tensor | None = None,
         importance_threshold: float = 0.0,
+        abs_grad_threshold: float | None = None,
         pruning_score: torch.Tensor | None = None,
         soft_pruning_ratio: float = 0.5,
     ) -> None:
@@ -414,23 +416,35 @@ class Gaussians(torch.nn.Module):
         high-error regions across sampled views (score > `importance_threshold`) are densified.
         Passing `None` reproduces the original gradient-only densification behavior.
 
+        When `abs_grad_threshold` is provided (FastGS AbsGS), the split decision uses the
+        absolute-gradient channel (densification_info row 2) instead of the vanilla gradient, so large
+        Gaussians over high-frequency detail are split despite per-pixel gradient cancellation. Clone
+        keeps the vanilla gradient. Passing `None` uses the vanilla gradient for both.
+
         When `pruning_score` is provided (FastGS VCP soft pruning), the opacity/oversized prune
         candidates are pruned probabilistically instead of all at once: only ~`soft_pruning_ratio`
         of them are removed, sampled with a bias toward Gaussians with high pruning score (i.e. low
         multi-view reconstruction contribution). Split originals and degenerate Gaussians are always
         pruned. Passing `None` reproduces the original deterministic prune.
         """
-        densification_mask = self.densification_info[
-            1
-        ] >= grad_threshold * self.densification_info[0].clamp_min(1.0)
+        # clone uses the vanilla screen-space gradient; split uses the abs-gradient channel (AbsGS,
+        # densification_info row 2) when abs_grad_threshold is given, else the same vanilla gradient.
+        denom = self.densification_info[0].clamp_min(1.0)
+        clone_grad_mask = self.densification_info[1] >= grad_threshold * denom
+        if abs_grad_threshold is not None:
+            split_grad_mask = self.densification_info[2] >= abs_grad_threshold * denom
+        else:
+            split_grad_mask = clone_grad_mask
         if importance_score is not None:
-            densification_mask &= importance_score > importance_threshold
+            importance_mask = importance_score > importance_threshold
+            clone_grad_mask = clone_grad_mask & importance_mask
+            split_grad_mask = split_grad_mask & importance_mask
         is_small = torch.max(self._scales, dim=1).values <= math.log(
             self.percent_dense * self.training_cameras_extent
         )
 
         # duplicate small gaussians
-        duplicate_mask = densification_mask & is_small
+        duplicate_mask = clone_grad_mask & is_small
         n_new_gaussians_duplicate = duplicate_mask.sum().item()
         duplicated_means = self._means[duplicate_mask]
         duplicated_sh_coefficients_0 = self._sh_coefficients_0[duplicate_mask]
@@ -440,7 +454,7 @@ class Gaussians(torch.nn.Module):
         duplicated_rotations = self._rotations[duplicate_mask]
 
         # split large gaussians
-        split_mask = densification_mask & ~is_small
+        split_mask = split_grad_mask & ~is_small
         n_new_gaussians_split = 2 * split_mask.sum().item()
         split_scales = (
             self._scales[split_mask].exp().expand(2, -1, -1).flatten(end_dim=1)
