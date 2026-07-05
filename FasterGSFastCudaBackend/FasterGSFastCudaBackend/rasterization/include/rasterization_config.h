@@ -43,6 +43,10 @@ namespace faster_gs::rasterization::config {
     static_assert(false, "invalid truncation mode");
     #endif
     #undef TRUNCATION_MODE
+    // FastGS Compact Box (Eq. 15): scales the Mahalanobis cutoff by beta (linear) -> A(p) = beta * (2 ln(sigma / tau_alpha)).
+    // Injected on power_threshold = ln(sigma/tau_alpha), so cutoff_factor = 2*beta*power_threshold reproduces Eq. 15.
+    // beta < 1 tightens the per-primitive box (fewer touched tiles). 1.0f == disabled (byte-identical to baseline).
+    DEF float compact_box_beta = 1.0f;
     // block size constants
     DEF int block_size_preprocess = 128;
     DEF int block_size_preprocess_backward = 128;

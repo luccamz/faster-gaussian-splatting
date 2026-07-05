@@ -158,7 +158,7 @@ namespace faster_gs::rasterization::kernels::inference {
         );
 
         // compute bounds
-        const float power_threshold = config::original_opacity_interpretation ? logf(opacity * config::min_alpha_threshold_rcp) : config::max_power_threshold;
+        const float power_threshold = config::compact_box_beta * (config::original_opacity_interpretation ? logf(opacity * config::min_alpha_threshold_rcp) : config::max_power_threshold);
         const float cutoff_factor = 2.0f * power_threshold;
         const float extent_x = fmaxf(sqrtf(cov2d.x * cutoff_factor) - 0.5f, 0.0f);
         const float extent_y = fmaxf(sqrtf(cov2d.z * cutoff_factor) - 0.5f, 0.0f);
@@ -261,7 +261,7 @@ namespace faster_gs::rasterization::kernels::inference {
         const float4 conic_opacity = primitive_conic_opacity[primitive_idx];
         const float3 conic = make_float3(conic_opacity);
         const float opacity = conic_opacity.w;
-        const float power_threshold = config::original_opacity_interpretation ? logf(opacity * config::min_alpha_threshold_rcp) : config::max_power_threshold;
+        const float power_threshold = config::compact_box_beta * (config::original_opacity_interpretation ? logf(opacity * config::min_alpha_threshold_rcp) : config::max_power_threshold);
 
         uint current_write_offset = primitive_offsets[original_idx];
 
