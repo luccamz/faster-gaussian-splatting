@@ -28,6 +28,7 @@ def extract_settings(
     active_sh_bases: int,
     bg_color: torch.Tensor,
     proper_antialiasing: bool,
+    render_scale: float = 1.0,
 ) -> RasterizerSettings:
     if not isinstance(view.camera, PerspectiveCamera):
         raise Framework.RendererError(
@@ -37,17 +38,26 @@ def extract_settings(
         Logger.log_warning(
             "found distortion parameters that will be ignored by the rasterizer"
         )
+    width, height = view.camera.width, view.camera.height
+    focal_x, focal_y = view.camera.focal_x, view.camera.focal_y
+    center_x, center_y = view.camera.center_x, view.camera.center_y
+    if render_scale > 1.0:
+        # DashGaussian coarse-to-fine: rasterize at a reduced size and scale the intrinsics to match
+        width, height = int(view.camera.width / render_scale), int(view.camera.height / render_scale)
+        scale_x, scale_y = width / view.camera.width, height / view.camera.height
+        focal_x, focal_y = focal_x * scale_x, focal_y * scale_y
+        center_x, center_y = center_x * scale_x, center_y * scale_y
     return RasterizerSettings(
         view.w2c,
         view.position,
         bg_color,
         active_sh_bases,
-        view.camera.width,
-        view.camera.height,
-        view.camera.focal_x,
-        view.camera.focal_y,
-        view.camera.center_x,
-        view.camera.center_y,
+        width,
+        height,
+        focal_x,
+        focal_y,
+        center_x,
+        center_y,
         view.camera.near_plane,
         view.camera.far_plane,
         proper_antialiasing,
@@ -87,7 +97,7 @@ class FasterGSRenderer(BaseRenderer):
             return self.render_image_inference(view, to_chw)
 
     def render_image_training(
-        self, view: View, update_densification_info: bool, bg_color: torch.Tensor
+        self, view: View, update_densification_info: bool, bg_color: torch.Tensor, render_scale: float = 1.0
     ) -> torch.Tensor:
         """Renders an image for a given view."""
         image = diff_rasterize(
@@ -105,6 +115,7 @@ class FasterGSRenderer(BaseRenderer):
                 self.model.gaussians.active_sh_bases,
                 bg_color,
                 self.PROPER_ANTIALIASING,
+                render_scale,
             ),
         )
         if self.model.ppisp is not None:

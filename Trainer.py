@@ -15,6 +15,7 @@ from Methods.Base.utils import (
     post_training_callback,
 )
 from Methods.FasterGSFast.Loss import FasterGSLoss
+from Methods.FasterGSFast.ResolutionScheduler import ResolutionScheduler
 from Methods.FasterGSFast.utils import enable_expandable_segments, carve
 from Optim.Samplers.DatasetSamplers import DatasetSampler
 
@@ -59,6 +60,14 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
             USE=False,  # FastGS post-densify opacity cap: after each densification cap activated opacity at MAX + reset opacity Adam; only used when USE_MCMC=False
             MAX=0.8,
         ),
+    ),
+    RESOLUTION_SCHEDULE=Framework.ConfigParameterList(
+        # DashGaussian coarse-to-fine training-resolution schedule (FFT-driven): ramps the render
+        # downsampling factor MAX_SCALE->1 by DENSIFICATION_END_ITERATION for faster early iterations.
+        USE=False,
+        MAX_SCALE=8,
+        N_LEVELS=32,
+        START_SIGNIFICANCE_FACTOR=4,
     ),
     USE_MCMC=False,
     MAX_PRIMITIVES=1_000_000,  # only used when USE_MCMC=True
@@ -168,6 +177,17 @@ class FasterGSTrainer(GuiTrainer):
         if self.model.ppisp is not None:
             self.model.ppisp.initialize(dataset, self.NUM_ITERATIONS)
         self.loss = FasterGSLoss(loss_config=self.LOSS, model=self.model)
+        # DashGaussian coarse-to-fine resolution schedule, built once from the training-image spectra
+        self.resolution_scheduler = (
+            ResolutionScheduler(
+                [view.rgb for view in dataset.train()],
+                self.NUM_ITERATIONS,
+                self.DENSIFICATION_END_ITERATION,
+                self.RESOLUTION_SCHEDULE,
+            )
+            if self.RESOLUTION_SCHEDULE.USE
+            else None
+        )
 
     @training_callback(priority=110, start_iteration=1000, iteration_stride=1000)
     @torch.no_grad()
@@ -307,17 +327,28 @@ class FasterGSTrainer(GuiTrainer):
             if self.USE_RANDOM_BACKGROUND_COLOR
             else view.camera.background_color
         )
+        render_scale = (
+            self.resolution_scheduler.get_res_scale(iteration)
+            if self.resolution_scheduler is not None
+            else 1
+        )
         image = self.renderer.render_image_training(
             view=view,
             update_densification_info=not self.USE_MCMC
             and iteration < self.DENSIFICATION_END_ITERATION,
             bg_color=bg_color,
+            render_scale=render_scale,
         )
         # calculate loss
         # compose gt with background color if needed  # FIXME: integrate into data model
         rgb_gt = view.rgb
         if (alpha_gt := view.alpha) is not None:
             rgb_gt = apply_background_color(rgb_gt, alpha_gt, bg_color)
+        if render_scale > 1:
+            # DashGaussian: downsample the GT to the reduced render size before the loss
+            rgb_gt = torch.nn.functional.interpolate(
+                rgb_gt.unsqueeze(0), size=image.shape[-2:], mode="bilinear", antialias=True, align_corners=False
+            ).squeeze(0)
         loss = self.loss(image, rgb_gt)
         # backward
         loss.backward()
