@@ -355,6 +355,12 @@ class Gaussians(torch.nn.Module):
             opacities_new = (opacities_new.sigmoid() / coef[..., None]).logit(eps=1e-6)
         replace_param_group_data(self.optimizer, opacities_new, "opacities")
 
+    def clamp_opacities(self, max_opacity: float) -> None:
+        """FastGS post-densify opacity cap: cap activated opacity at `max_opacity` and reset the
+        opacity Adam moments. Mirrors his clamp at the end of every densify_and_prune_fastgs."""
+        opacities_new = self._opacities.clamp_max(math.log(max_opacity / (1.0 - max_opacity)))
+        replace_param_group_data(self.optimizer, opacities_new, "opacities")
+
     def prune(self, prune_mask: torch.Tensor) -> None:
         """Prunes Gaussians that are not visible or too large."""
         valid_mask = ~prune_mask
