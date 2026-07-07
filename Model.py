@@ -414,6 +414,7 @@ class Gaussians(torch.nn.Module):
         abs_grad_threshold: float | None = None,
         pruning_score: torch.Tensor | None = None,
         soft_pruning_ratio: float = 0.5,
+        revised_opacity: bool = False,
     ) -> None:
         """Densify Gaussians and prune those that are not visible or too large.
 
@@ -432,6 +433,12 @@ class Gaussians(torch.nn.Module):
         of them are removed, sampled with a bias toward Gaussians with high pruning score (i.e. low
         multi-view reconstruction contribution). Split originals and degenerate Gaussians are always
         pruned. Passing `None` reproduces the original deterministic prune.
+
+        When `revised_opacity` is True (Revising Densification, arXiv:2404.06109), the clone operation
+        rescales the retained parent and its duplicate to opacity 1-sqrt(1-a), so the cloned region keeps
+        its pre-clone alpha-compositing weight (1-a) instead of the biased (1-a)^2. Split is left
+        unchanged (the paper derives the correction for cloning only). Passing False keeps the parent's
+        opacity on clone.
         """
         # clone uses the vanilla screen-space gradient; split uses the abs-gradient channel (AbsGS,
         # densification_info row 2) when abs_grad_threshold is given, else the same vanilla gradient.
@@ -456,6 +463,14 @@ class Gaussians(torch.nn.Module):
         duplicated_sh_coefficients_0 = self._sh_coefficients_0[duplicate_mask]
         duplicated_sh_coefficients_rest = self._sh_coefficients_rest[duplicate_mask]
         duplicated_opacities = self._opacities[duplicate_mask]
+        if revised_opacity:
+            # Revising Densification (arXiv:2404.06109, Fig. 2): a clone preserves opacity, so the
+            # region composites as (1-a)^2 instead of (1-a), over-weighting cloned areas. Rescale both
+            # the retained parent (in place) and the appended duplicate to a_hat = 1 - sqrt(1-a) so
+            # (1-a_hat)^2 = 1-a. The parent keeps its warm Adam state; the duplicate gets cold state.
+            corrected = (1.0 - (1.0 - duplicated_opacities.sigmoid()).sqrt()).logit(eps=1e-6)
+            self._opacities.data[duplicate_mask] = corrected
+            duplicated_opacities = corrected
         duplicated_scales = self._scales[duplicate_mask]
         duplicated_rotations = self._rotations[duplicate_mask]
 

@@ -60,6 +60,9 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
             USE=False,  # FastGS post-densify opacity cap: after each densification cap activated opacity at MAX + reset opacity Adam; only used when USE_MCMC=False
             MAX=0.8,
         ),
+        REVISED_OPACITY=Framework.ConfigParameterList(
+            USE=False,  # Revising Densification (arXiv:2404.06109): on clone, rescale parent+duplicate opacity to 1-sqrt(1-a) so the region keeps its pre-clone alpha-compositing weight; only used when USE_MCMC=False
+        ),
     ),
     RESOLUTION_SCHEDULE=Framework.ConfigParameterList(
         # DashGaussian coarse-to-fine training-resolution schedule (FFT-driven): ramps the render
@@ -131,7 +134,7 @@ class FasterGSTrainer(GuiTrainer):
     @torch.no_grad()
     def setup_gaussians(self, _, dataset: "BaseDataset") -> None:
         """Sets up the model."""
-        if self.USE_MCMC and (self.FASTGS.VCD.USE or self.FASTGS.VCP.USE or self.FASTGS.ABSGS.USE or self.FASTGS.OPACITY_CLAMP.USE):
+        if self.USE_MCMC and (self.FASTGS.VCD.USE or self.FASTGS.VCP.USE or self.FASTGS.ABSGS.USE or self.FASTGS.OPACITY_CLAMP.USE or self.FASTGS.REVISED_OPACITY.USE):
             raise Framework.TrainingError(
                 "FastGS VCD/VCP/AbsGS densification only compose with the ADC path; set USE_MCMC=False"
             )
@@ -237,6 +240,7 @@ class FasterGSTrainer(GuiTrainer):
                 abs_grad_threshold=self.FASTGS.ABSGS.GRAD_ABS_THRESHOLD if self.FASTGS.ABSGS.USE else None,
                 pruning_score=pruning_score if self.FASTGS.VCP.USE else None,
                 soft_pruning_ratio=self.FASTGS.VCP.SOFT_PRUNING_RATIO,
+                revised_opacity=self.FASTGS.REVISED_OPACITY.USE,
             )
             if self.FASTGS.OPACITY_CLAMP.USE:
                 self.model.gaussians.clamp_opacities(self.FASTGS.OPACITY_CLAMP.MAX)
