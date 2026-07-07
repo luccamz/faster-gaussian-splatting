@@ -60,7 +60,6 @@ class ResolutionScheduler:
         return 1.0 / mid
 
     def _init_schedule(self, train_images: 'list[torch.Tensor]') -> None:
-        self.max_reso_scale = 8
         self.next_i = 2
         scene_freq = None
         for image in train_images:
