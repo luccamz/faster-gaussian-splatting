@@ -46,6 +46,7 @@ class Gaussians(torch.nn.Module):
         self.register_parameter("_rotations", None)
         self.register_parameter("_opacities", None)
         self._densification_info = None
+        self._pixel_denom = None
         self.optimizer = None
         self.percent_dense = 0.0
         self.training_cameras_extent = 1.0
@@ -134,6 +135,11 @@ class Gaussians(torch.nn.Module):
     def densification_info(self) -> torch.Tensor:
         """Returns the current densification info buffers (2, N)."""
         return self._densification_info
+
+    @property
+    def pixel_denom(self) -> torch.Tensor | None:
+        """Returns the Pixel-GS per-Gaussian pixel-coverage clone denominator (N,), or None if inactive."""
+        return self._pixel_denom
 
     @property
     def covariances(self) -> torch.Tensor:
@@ -377,6 +383,8 @@ class Gaussians(torch.nn.Module):
             self._densification_info = self._densification_info[
                 :, valid_mask
             ].contiguous()
+        if self._pixel_denom is not None:
+            self._pixel_denom = self._pixel_denom[valid_mask].contiguous()
         if self._filter_3d is not None:
             self._filter_3d = self._filter_3d[valid_mask].contiguous()
 
@@ -395,14 +403,20 @@ class Gaussians(torch.nn.Module):
             self._densification_info = self._densification_info[
                 :, ordering
             ].contiguous()
+        if self._pixel_denom is not None:
+            self._pixel_denom = self._pixel_denom[ordering].contiguous()
         if self._filter_3d is not None:
             self._filter_3d = self._filter_3d[ordering].contiguous()
 
-    def reset_densification_info(self, track_abs_grad: bool = False):
+    def reset_densification_info(self, track_abs_grad: bool = False, track_pixel_counts: bool = False):
         # 3 rows when AbsGS is active: [visibility count, gradient norm, abs-gradient norm (split channel)]
         self._densification_info = torch.zeros(
             (3 if track_abs_grad else 2, self._means.shape[0]), dtype=torch.float32, device="cuda"
         )
+        # Pixel-GS: separate per-Gaussian pixel-coverage accumulator used as the clone denominator
+        self._pixel_denom = torch.zeros(
+            self._means.shape[0], dtype=torch.float32, device="cuda"
+        ) if track_pixel_counts else None
 
     def adaptive_density_control(
         self,
@@ -443,7 +457,10 @@ class Gaussians(torch.nn.Module):
         # clone uses the vanilla screen-space gradient; split uses the abs-gradient channel (AbsGS,
         # densification_info row 2) when abs_grad_threshold is given, else the same vanilla gradient.
         denom = self.densification_info[0].clamp_min(1.0)
-        clone_grad_mask = self.densification_info[1] >= grad_threshold * denom
+        # Pixel-GS: the clone criterion is normalized by the pixel-coverage denominator (Sigma p); the
+        # split/abs criterion keeps the visibility-count denominator. Without Pixel-GS both are the count.
+        clone_denom = self._pixel_denom.clamp_min(1.0) if self._pixel_denom is not None else denom
+        clone_grad_mask = self.densification_info[1] >= grad_threshold * clone_denom
         if abs_grad_threshold is not None:
             split_grad_mask = self.densification_info[2] >= abs_grad_threshold * denom
         else:
@@ -529,6 +546,7 @@ class Gaussians(torch.nn.Module):
 
         # if they were set, densification info and 3d filter are now no longer valid
         self._densification_info = None
+        self._pixel_denom = None
         self._filter_3d = None
 
         # prune

@@ -63,6 +63,9 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
         REVISED_OPACITY=Framework.ConfigParameterList(
             USE=False,  # Revising Densification (arXiv:2404.06109): on clone, rescale parent+duplicate opacity to 1-sqrt(1-a) so the region keeps its pre-clone alpha-compositing weight; only used when USE_MCMC=False
         ),
+        PIXEL_GS=Framework.ConfigParameterList(
+            USE=False,  # Pixel-GS (arXiv:2403.15530): weight each Gaussian's clone-gradient average by its per-view pixel coverage so under-reconstructed large Gaussians clone; only used when USE_MCMC=False
+        ),
     ),
     RESOLUTION_SCHEDULE=Framework.ConfigParameterList(
         # DashGaussian coarse-to-fine training-resolution schedule (FFT-driven): ramps the render
@@ -134,7 +137,7 @@ class FasterGSTrainer(GuiTrainer):
     @torch.no_grad()
     def setup_gaussians(self, _, dataset: "BaseDataset") -> None:
         """Sets up the model."""
-        if self.USE_MCMC and (self.FASTGS.VCD.USE or self.FASTGS.VCP.USE or self.FASTGS.ABSGS.USE or self.FASTGS.OPACITY_CLAMP.USE or self.FASTGS.REVISED_OPACITY.USE):
+        if self.USE_MCMC and (self.FASTGS.VCD.USE or self.FASTGS.VCP.USE or self.FASTGS.ABSGS.USE or self.FASTGS.OPACITY_CLAMP.USE or self.FASTGS.REVISED_OPACITY.USE or self.FASTGS.PIXEL_GS.USE):
             raise Framework.TrainingError(
                 "FastGS VCD/VCP/AbsGS densification only compose with the ADC path; set USE_MCMC=False"
             )
@@ -174,7 +177,7 @@ class FasterGSTrainer(GuiTrainer):
         self.model.gaussians.initialize_from_point_cloud(point_cloud, self.USE_MCMC)
         self.model.gaussians.training_setup(self, radius)
         if not self.USE_MCMC:
-            self.model.gaussians.reset_densification_info(track_abs_grad=self.FASTGS.ABSGS.USE)
+            self.model.gaussians.reset_densification_info(track_abs_grad=self.FASTGS.ABSGS.USE, track_pixel_counts=self.FASTGS.PIXEL_GS.USE)
         if self.FILTER_3D.USE:
             self.model.gaussians.setup_3d_filter(self.FILTER_3D, dataset)
         if self.model.ppisp is not None:
@@ -259,7 +262,7 @@ class FasterGSTrainer(GuiTrainer):
                 )
 
             if iteration < self.DENSIFICATION_END_ITERATION:
-                self.model.gaussians.reset_densification_info(track_abs_grad=self.FASTGS.ABSGS.USE)
+                self.model.gaussians.reset_densification_info(track_abs_grad=self.FASTGS.ABSGS.USE, track_pixel_counts=self.FASTGS.PIXEL_GS.USE)
         if self.requires_empty_cache:
             torch.cuda.empty_cache()
         if self.FILTER_3D.USE:

@@ -94,6 +94,7 @@ faster_gs::rasterization::forward_wrapper(
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 faster_gs::rasterization::backward_wrapper(
     torch::Tensor& densification_info,
+    torch::Tensor& pixel_denom,
     const torch::Tensor& grad_image,
     const torch::Tensor& image,
     const torch::Tensor& means,
@@ -139,6 +140,10 @@ faster_gs::rasterization::backward_wrapper(
     // a scratch buffer for the homodirectional screen-space gradient (else pass nullptr, no extra work).
     const bool track_abs_grad = densification_info.size(0) > 2;
     torch::Tensor grad_mean2d_abs_helper = track_abs_grad ? torch::zeros({n_primitives, 2}, float_options) : torch::empty({0}, float_options);
+    // Pixel-GS: per-view per-Gaussian pixel-coverage counts, accumulated in the blend backward and used to
+    // pixel-weight the clone-channel gradient (nullptr when disabled, no extra work).
+    const bool track_pixel_counts = pixel_denom.size(0) > 0;
+    torch::Tensor pixel_counts_helper = track_pixel_counts ? torch::zeros({n_primitives}, float_options) : torch::empty({0}, float_options);
 
     backward(
         grad_image.contiguous().data_ptr<float>(),
@@ -165,6 +170,8 @@ faster_gs::rasterization::backward_wrapper(
         track_abs_grad ? reinterpret_cast<float2*>(grad_mean2d_abs_helper.data_ptr<float>()) : nullptr,
         grad_conic_helper.data_ptr<float>(),
         update_densification_info ? densification_info.data_ptr<float>() : nullptr,
+        track_pixel_counts ? pixel_counts_helper.data_ptr<float>() : nullptr,
+        track_pixel_counts ? pixel_denom.data_ptr<float>() : nullptr,
         n_primitives,
         n_instances,
         n_buckets,

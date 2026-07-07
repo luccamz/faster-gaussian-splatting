@@ -23,6 +23,7 @@ namespace faster_gs::rasterization::kernels::backward {
         const uint* __restrict__ primitive_n_touched_tiles,
         const float2* __restrict__ grad_mean2d,
         const float2* __restrict__ grad_mean2d_abs,
+        const float* __restrict__ pixel_counts,
         const float* __restrict__ grad_conic,
         float3* __restrict__ grad_means,
         float3* __restrict__ grad_scales,
@@ -31,6 +32,7 @@ namespace faster_gs::rasterization::kernels::backward {
         float3* __restrict__ grad_sh_coefficients_0,
         float3* __restrict__ grad_sh_coefficients_rest,
         float* __restrict__ densification_info,
+        float* __restrict__ pixel_denom,
         const uint n_primitives,
         const uint active_sh_bases,
         const uint total_sh_bases,
@@ -193,12 +195,16 @@ namespace faster_gs::rasterization::kernels::backward {
 
         // for adaptive density control
         if (densification_info != nullptr) {
+            // Pixel-GS: weight the clone-channel gradient by this Gaussian's per-view pixel coverage and
+            // accumulate that coverage as the clone denominator; weight is 1 when Pixel-GS is disabled.
+            const float pixel_weight = (pixel_counts != nullptr) ? pixel_counts[primitive_idx] : 1.0f;
             densification_info[primitive_idx] += 1.0f;
             const float2 dL_dmean2d_ndc = 0.5f * make_float2(
                 dL_dmean2d.x * width,
                 dL_dmean2d.y * height
             );
-            densification_info[n_primitives + primitive_idx] += length(dL_dmean2d_ndc);
+            densification_info[n_primitives + primitive_idx] += pixel_weight * length(dL_dmean2d_ndc);
+            if (pixel_denom != nullptr) pixel_denom[primitive_idx] += pixel_weight;
             if (grad_mean2d_abs != nullptr) {
                 // FastGS AbsGS: homodirectional (per-pixel abs-summed) screen-space gradient magnitude
                 // for the split-decision channel. densification_info has 3 rows when this is active.
@@ -285,6 +291,7 @@ namespace faster_gs::rasterization::kernels::backward {
         const float4* __restrict__ bucket_color_transmittance,
         float2* __restrict__ grad_mean2d,
         float2* __restrict__ grad_mean2d_abs,
+        float* __restrict__ pixel_counts,
         float* __restrict__ grad_conic,
         float* __restrict__ grad_opacity,
         float3* __restrict__ grad_sh_coefficients_0,
@@ -338,6 +345,8 @@ namespace faster_gs::rasterization::kernels::backward {
         float2 dL_dmean2d_accum = {0.0f, 0.0f};
         float2 dL_dmean2d_abs_accum = {0.0f, 0.0f};
         const bool densify_abs = grad_mean2d_abs != nullptr;
+        const bool count_pixels = pixel_counts != nullptr;
+        float pixel_count_accum = 0.0f;
         float3 dL_dconic_accum = {0.0f, 0.0f, 0.0f};
         float dL_dopacity_accum = 0.0f;
         float3 dL_dcolor_accum = {0.0f, 0.0f, 0.0f};
@@ -433,6 +442,7 @@ namespace faster_gs::rasterization::kernels::backward {
             if (!config::original_opacity_interpretation && gaussian < config::min_alpha_threshold) continue;
             const float alpha = opacity * gaussian;
             if (config::original_opacity_interpretation && alpha < config::min_alpha_threshold) continue;
+            pixel_count_accum += 1.0f;  // Pixel-GS: this Gaussian contributes to this pixel
 
             const float blending_weight = transmittance * alpha;
 
@@ -478,6 +488,7 @@ namespace faster_gs::rasterization::kernels::backward {
         if (valid_primitive) {
             atomicAdd(&grad_mean2d[primitive_idx].x, dL_dmean2d_accum.x);
             atomicAdd(&grad_mean2d[primitive_idx].y, dL_dmean2d_accum.y);
+            if (count_pixels) atomicAdd(&pixel_counts[primitive_idx], pixel_count_accum);
             if (densify_abs) {
                 atomicAdd(&grad_mean2d_abs[primitive_idx].x, dL_dmean2d_abs_accum.x);
                 atomicAdd(&grad_mean2d_abs[primitive_idx].y, dL_dmean2d_abs_accum.y);

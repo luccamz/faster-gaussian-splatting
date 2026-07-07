@@ -51,6 +51,7 @@ class _Rasterize(torch.autograd.Function):
         sh_coefficients_0: torch.Tensor,
         sh_coefficients_rest: torch.Tensor,
         densification_info: torch.Tensor,
+        pixel_denom: torch.Tensor,
         rasterizer_settings: RasterizerSettings,
     ) -> torch.Tensor:
         (
@@ -86,7 +87,9 @@ class _Rasterize(torch.autograd.Function):
             bucket_buffers,
         )
         ctx.densification_info = densification_info
+        ctx.pixel_denom = pixel_denom
         ctx.mark_non_differentiable(densification_info)
+        ctx.mark_non_differentiable(pixel_denom)
         return image
 
     @staticmethod
@@ -104,6 +107,7 @@ class _Rasterize(torch.autograd.Function):
             grad_sh_coefficients_rest,
         ) = _C.backward(
             ctx.densification_info,
+            ctx.pixel_denom,
             grad_image,
             *ctx.saved_tensors,
             *ctx.rasterizer_settings.as_tuple(),
@@ -117,6 +121,7 @@ class _Rasterize(torch.autograd.Function):
             grad_sh_coefficients_0,
             grad_sh_coefficients_rest,
             None,  # densification_info
+            None,  # pixel_denom
             None,  # rasterizer_settings
         )
 
@@ -129,6 +134,7 @@ def diff_rasterize(
     sh_coefficients_0: torch.Tensor,
     sh_coefficients_rest: torch.Tensor,
     densification_info: torch.Tensor,
+    pixel_denom: torch.Tensor,
     rasterizer_settings: RasterizerSettings,
 ) -> torch.Tensor:
     return _Rasterize.apply(
@@ -139,6 +145,7 @@ def diff_rasterize(
         sh_coefficients_0,
         sh_coefficients_rest,
         densification_info,
+        pixel_denom,
         rasterizer_settings,
     )
 
