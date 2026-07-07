@@ -347,7 +347,7 @@ class FasterGSTrainer(GuiTrainer):
         if render_scale > 1:
             # DashGaussian: downsample the GT to the reduced render size before the loss
             rgb_gt = torch.nn.functional.interpolate(
-                rgb_gt.unsqueeze(0), size=image.shape[-2:], mode="bilinear", antialias=True, align_corners=False
+                rgb_gt.unsqueeze(0), size=image.shape[-2:], mode="bicubic", antialias=True, align_corners=False
             ).squeeze(0)
         loss = self.loss(image, rgb_gt)
         # backward
