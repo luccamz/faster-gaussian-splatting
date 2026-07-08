@@ -95,6 +95,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 faster_gs::rasterization::backward_wrapper(
     torch::Tensor& densification_info,
     torch::Tensor& pixel_denom,
+    const float depth_scale_reference,
     const torch::Tensor& grad_image,
     const torch::Tensor& image,
     const torch::Tensor& means,
@@ -172,6 +173,7 @@ faster_gs::rasterization::backward_wrapper(
         update_densification_info ? densification_info.data_ptr<float>() : nullptr,
         track_pixel_counts ? pixel_counts_helper.data_ptr<float>() : nullptr,
         track_pixel_counts ? pixel_denom.data_ptr<float>() : nullptr,
+        depth_scale_reference,
         n_primitives,
         n_instances,
         n_buckets,

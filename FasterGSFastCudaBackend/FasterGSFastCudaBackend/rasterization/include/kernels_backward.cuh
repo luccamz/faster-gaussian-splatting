@@ -33,6 +33,7 @@ namespace faster_gs::rasterization::kernels::backward {
         float3* __restrict__ grad_sh_coefficients_rest,
         float* __restrict__ densification_info,
         float* __restrict__ pixel_denom,
+        const float depth_scale_reference,
         const uint n_primitives,
         const uint active_sh_bases,
         const uint total_sh_bases,
@@ -198,12 +199,17 @@ namespace faster_gs::rasterization::kernels::backward {
             // Pixel-GS: weight the clone-channel gradient by this Gaussian's per-view pixel coverage and
             // accumulate that coverage as the clone denominator; weight is 1 when Pixel-GS is disabled.
             const float pixel_weight = (pixel_counts != nullptr) ? pixel_counts[primitive_idx] : 1.0f;
+            // Pixel-GS scaled gradient field (Eq. 10): down-weight near-camera Gaussians to suppress
+            // floaters; factor is 1 when disabled (depth_scale_reference <= 0).
+            const float depth_scale = (depth_scale_reference > 0.0f)
+                ? fminf((depth / depth_scale_reference) * (depth / depth_scale_reference), 1.0f)
+                : 1.0f;
             densification_info[primitive_idx] += 1.0f;
             const float2 dL_dmean2d_ndc = 0.5f * make_float2(
                 dL_dmean2d.x * width,
                 dL_dmean2d.y * height
             );
-            densification_info[n_primitives + primitive_idx] += pixel_weight * length(dL_dmean2d_ndc);
+            densification_info[n_primitives + primitive_idx] += depth_scale * pixel_weight * length(dL_dmean2d_ndc);
             if (pixel_denom != nullptr) pixel_denom[primitive_idx] += pixel_weight;
             if (grad_mean2d_abs != nullptr) {
                 // FastGS AbsGS: homodirectional (per-pixel abs-summed) screen-space gradient magnitude
@@ -213,7 +219,7 @@ namespace faster_gs::rasterization::kernels::backward {
                     dL_dmean2d_abs.x * width,
                     dL_dmean2d_abs.y * height
                 );
-                densification_info[2 * n_primitives + primitive_idx] += length(dL_dmean2d_abs_ndc);
+                densification_info[2 * n_primitives + primitive_idx] += depth_scale * length(dL_dmean2d_abs_ndc);
             }
         }
 

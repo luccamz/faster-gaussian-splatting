@@ -52,6 +52,7 @@ class _Rasterize(torch.autograd.Function):
         sh_coefficients_rest: torch.Tensor,
         densification_info: torch.Tensor,
         pixel_denom: torch.Tensor,
+        depth_scale_reference: float,
         rasterizer_settings: RasterizerSettings,
     ) -> torch.Tensor:
         (
@@ -88,6 +89,7 @@ class _Rasterize(torch.autograd.Function):
         )
         ctx.densification_info = densification_info
         ctx.pixel_denom = pixel_denom
+        ctx.depth_scale_reference = depth_scale_reference
         ctx.mark_non_differentiable(densification_info)
         ctx.mark_non_differentiable(pixel_denom)
         return image
@@ -108,6 +110,7 @@ class _Rasterize(torch.autograd.Function):
         ) = _C.backward(
             ctx.densification_info,
             ctx.pixel_denom,
+            ctx.depth_scale_reference,
             grad_image,
             *ctx.saved_tensors,
             *ctx.rasterizer_settings.as_tuple(),
@@ -122,6 +125,7 @@ class _Rasterize(torch.autograd.Function):
             grad_sh_coefficients_rest,
             None,  # densification_info
             None,  # pixel_denom
+            None,  # depth_scale_reference
             None,  # rasterizer_settings
         )
 
@@ -135,6 +139,7 @@ def diff_rasterize(
     sh_coefficients_rest: torch.Tensor,
     densification_info: torch.Tensor,
     pixel_denom: torch.Tensor,
+    depth_scale_reference: float,
     rasterizer_settings: RasterizerSettings,
 ) -> torch.Tensor:
     return _Rasterize.apply(
@@ -146,6 +151,7 @@ def diff_rasterize(
         sh_coefficients_rest,
         densification_info,
         pixel_denom,
+        depth_scale_reference,
         rasterizer_settings,
     )
 

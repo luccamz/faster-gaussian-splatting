@@ -65,6 +65,7 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
         ),
         PIXEL_GS=Framework.ConfigParameterList(
             USE=False,  # Pixel-GS (arXiv:2403.15530): weight each Gaussian's clone-gradient average by its per-view pixel coverage so under-reconstructed large Gaussians clone; only used when USE_MCMC=False
+            DEPTH_SCALE_GAMMA=0.0,  # Pixel-GS scaled gradient field (Eq. 10): >0 scales the densification gradient by clip((depth / (gamma * scene_extent))^2, 0, 1) to suppress near-camera floaters; 0 disables (paper uses 0.37)
         ),
     ),
     RESOLUTION_SCHEDULE=Framework.ConfigParameterList(
@@ -345,6 +346,8 @@ class FasterGSTrainer(GuiTrainer):
             and iteration < self.DENSIFICATION_END_ITERATION,
             bg_color=bg_color,
             render_scale=render_scale,
+            depth_scale_reference=self.FASTGS.PIXEL_GS.DEPTH_SCALE_GAMMA
+            * self.model.gaussians.training_cameras_extent,
         )
         # calculate loss
         # compose gt with background color if needed  # FIXME: integrate into data model

@@ -97,7 +97,7 @@ class FasterGSRenderer(BaseRenderer):
             return self.render_image_inference(view, to_chw)
 
     def render_image_training(
-        self, view: View, update_densification_info: bool, bg_color: torch.Tensor, render_scale: float = 1.0
+        self, view: View, update_densification_info: bool, bg_color: torch.Tensor, render_scale: float = 1.0, depth_scale_reference: float = 0.0
     ) -> torch.Tensor:
         """Renders an image for a given view."""
         image = diff_rasterize(
@@ -113,6 +113,7 @@ class FasterGSRenderer(BaseRenderer):
             pixel_denom=self.model.gaussians.pixel_denom
             if (update_densification_info and self.model.gaussians.pixel_denom is not None)
             else torch.empty(0),
+            depth_scale_reference=depth_scale_reference,
             rasterizer_settings=extract_settings(
                 view,
                 self.model.gaussians.active_sh_bases,
@@ -140,6 +141,7 @@ class FasterGSRenderer(BaseRenderer):
             sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
             densification_info=torch.empty(0),
             pixel_denom=torch.empty(0),
+            depth_scale_reference=0.0,
             rasterizer_settings=extract_settings(
                 view,
                 self.model.gaussians.active_sh_bases,
