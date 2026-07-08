@@ -101,6 +101,8 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
         LAMBDA_DSSIM=0.2,  # weight for the DSSIM loss on the rgb image
         LAMBDA_OPACITY_REGULARIZATION=0.0,  # should be set to 0.01 when using MCMC
         LAMBDA_SCALE_REGULARIZATION=0.0,  # should be set to 0.01 when using MCMC
+        LAMBDA_FREQUENCY=0.0,  # FreGS (arXiv:2403.06908): weight for the progressive frequency-space amplitude+phase loss; 0 disables
+        FREQUENCY_D0_FRACTION=0.15,  # FreGS frequency annealing: initial low-pass band radius as a fraction of the max spectrum radius, grown to full by the densification end
     ),
     OPTIMIZER=Framework.ConfigParameterList(
         LEARNING_RATE_MEANS_INIT=0.00016,
@@ -183,7 +185,7 @@ class FasterGSTrainer(GuiTrainer):
             self.model.gaussians.setup_3d_filter(self.FILTER_3D, dataset)
         if self.model.ppisp is not None:
             self.model.ppisp.initialize(dataset, self.NUM_ITERATIONS)
-        self.loss = FasterGSLoss(loss_config=self.LOSS, model=self.model)
+        self.loss = FasterGSLoss(loss_config=self.LOSS, model=self.model, freq_anneal_end=self.DENSIFICATION_END_ITERATION)
         # DashGaussian coarse-to-fine resolution schedule, built once from the training-image spectra
         self.resolution_scheduler = (
             ResolutionScheduler(
@@ -359,7 +361,7 @@ class FasterGSTrainer(GuiTrainer):
             rgb_gt = torch.nn.functional.interpolate(
                 rgb_gt.unsqueeze(0), size=image.shape[-2:], mode="bicubic", antialias=True, align_corners=False
             ).squeeze(0)
-        loss = self.loss(image, rgb_gt)
+        loss = self.loss(image, rgb_gt, iteration)
         # backward
         loss.backward()
         # optimizer step
