@@ -42,6 +42,7 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
         VCD=Framework.ConfigParameterList(
             USE=False,
             IMPORTANCE_THRESHOLD=5,  # tau_d: min avg high-error-pixel count for a Gaussian to be densified
+            NORM_PERCENTILE=1.0,  # normalize the per-pixel error map by this quantile instead of its max (1.0=max=FastGS); <1 (e.g. 0.99) makes the high-error mask robust to outlier pixels
         ),
         VCP=Framework.ConfigParameterList(
             USE=False,
@@ -237,6 +238,7 @@ class FasterGSTrainer(GuiTrainer):
                     self.LOSS.LAMBDA_L1,
                     self.LOSS.LAMBDA_DSSIM,
                     need_importance=self.FASTGS.VCD.USE,
+                    norm_percentile=self.FASTGS.VCD.NORM_PERCENTILE,
                 )
             self.model.gaussians.adaptive_density_control(
                 self.DENSIFICATION_GRAD_THRESHOLD,

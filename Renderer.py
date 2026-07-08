@@ -233,6 +233,7 @@ class FasterGSRenderer(BaseRenderer):
         lambda_l1: float,
         lambda_dssim: float,
         need_importance: bool = True,
+        norm_percentile: float = 1.0,
     ) -> 'tuple[torch.Tensor | None, torch.Tensor]':
         """Computes FastGS multi-view consistency scores over the given sampled views.
 
@@ -284,7 +285,10 @@ class FasterGSRenderer(BaseRenderer):
             # per-pixel L1 over channels -> min-max normalized -> high-error mask (Eqs 6-8)
             l1_map = (image - rgb_gt).abs().mean(dim=0)
             l1_min = l1_map.min()
-            l1_norm = (l1_map - l1_min) / (l1_map.max() - l1_min).clamp_min(1e-8)
+            # normalize by the max (FastGS) or a lower quantile to keep the high-error mask robust to
+            # outlier pixels that otherwise compress the distribution and starve densification
+            l1_ceil = l1_map.max() if norm_percentile >= 1.0 else torch.quantile(l1_map.flatten(), norm_percentile)
+            l1_norm = (l1_map - l1_min) / (l1_ceil - l1_min).clamp_min(1e-8)
             metric_map = (l1_norm > loss_thresh).to(torch.int32).reshape(-1).contiguous()
             # per-Gaussian count of high-error pixels this Gaussian contributes to, this view;
             # reuses the render's buffers (no re-projection / re-sort)
