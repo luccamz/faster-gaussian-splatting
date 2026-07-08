@@ -101,7 +101,8 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
         LAMBDA_DSSIM=0.2,  # weight for the DSSIM loss on the rgb image
         LAMBDA_OPACITY_REGULARIZATION=0.0,  # should be set to 0.01 when using MCMC
         LAMBDA_SCALE_REGULARIZATION=0.0,  # should be set to 0.01 when using MCMC
-        LAMBDA_FREQUENCY=0.0,  # FreGS (arXiv:2403.06908): weight for the progressive frequency-space amplitude+phase loss; 0 disables
+        LAMBDA_FREQ_AMPLITUDE=0.0,  # FreGS (arXiv:2403.06908): weight for the frequency amplitude-discrepancy loss (ortho-normalized FFT, scale/resolution-invariant); 0 disables. Start ~0.1-1
+        LAMBDA_FREQ_PHASE=0.0,  # FreGS: weight for the frequency phase-discrepancy loss; keep low or 0 (phase is noisy and wraps at +-pi)
         FREQUENCY_D0_FRACTION=0.15,  # FreGS frequency annealing: initial low-pass band radius as a fraction of the max spectrum radius, grown to full by the densification end
     ),
     OPTIMIZER=Framework.ConfigParameterList(
