@@ -31,7 +31,6 @@ namespace faster_gs::rasterization {
         float* grad_conic_helper,
         float* densification_info,
         float* pixel_counts,
-        float* pixel_denom,
         const float depth_scale_reference,
         const int n_primitives,
         const int n_instances,

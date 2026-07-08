@@ -94,7 +94,7 @@ faster_gs::rasterization::forward_wrapper(
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 faster_gs::rasterization::backward_wrapper(
     torch::Tensor& densification_info,
-    torch::Tensor& pixel_denom,
+    const bool track_pixel_counts,
     const float depth_scale_reference,
     const torch::Tensor& grad_image,
     const torch::Tensor& image,
@@ -137,13 +137,12 @@ faster_gs::rasterization::backward_wrapper(
     torch::Tensor grad_conic_helper = torch::zeros({3, n_primitives}, float_options);
 
     const bool update_densification_info = densification_info.size(0) > 0;
-    // FastGS AbsGS: a 3-row densification_info signals the abs-gradient split channel is active; allocate
-    // a scratch buffer for the homodirectional screen-space gradient (else pass nullptr, no extra work).
-    const bool track_abs_grad = densification_info.size(0) > 2;
+    // densification_info rows are [visibility count, gradient, abs? (AbsGS split channel), Sigma-p?
+    // (Pixel-GS clone denominator)]; recover the abs channel from the row count given the Pixel-GS flag.
+    const bool track_abs_grad = (densification_info.size(0) - 2 - (track_pixel_counts ? 1 : 0)) > 0;
     torch::Tensor grad_mean2d_abs_helper = track_abs_grad ? torch::zeros({n_primitives, 2}, float_options) : torch::empty({0}, float_options);
     // Pixel-GS: per-view per-Gaussian pixel-coverage counts, accumulated in the blend backward and used to
     // pixel-weight the clone-channel gradient (nullptr when disabled, no extra work).
-    const bool track_pixel_counts = pixel_denom.size(0) > 0;
     torch::Tensor pixel_counts_helper = track_pixel_counts ? torch::zeros({n_primitives}, float_options) : torch::empty({0}, float_options);
 
     backward(
@@ -172,7 +171,6 @@ faster_gs::rasterization::backward_wrapper(
         grad_conic_helper.data_ptr<float>(),
         update_densification_info ? densification_info.data_ptr<float>() : nullptr,
         track_pixel_counts ? pixel_counts_helper.data_ptr<float>() : nullptr,
-        track_pixel_counts ? pixel_denom.data_ptr<float>() : nullptr,
         depth_scale_reference,
         n_primitives,
         n_instances,

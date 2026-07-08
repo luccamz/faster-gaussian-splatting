@@ -32,7 +32,6 @@ namespace faster_gs::rasterization::kernels::backward {
         float3* __restrict__ grad_sh_coefficients_0,
         float3* __restrict__ grad_sh_coefficients_rest,
         float* __restrict__ densification_info,
-        float* __restrict__ pixel_denom,
         const float depth_scale_reference,
         const uint n_primitives,
         const uint active_sh_bases,
@@ -210,7 +209,12 @@ namespace faster_gs::rasterization::kernels::backward {
                 dL_dmean2d.y * height
             );
             densification_info[n_primitives + primitive_idx] += depth_scale * pixel_weight * length(dL_dmean2d_ndc);
-            if (pixel_denom != nullptr) pixel_denom[primitive_idx] += pixel_weight;
+            if (pixel_counts != nullptr) {
+                // Pixel-GS clone denominator (Sigma p): stored in the densification_info row after the abs
+                // channel -- row 2 without AbsGS, row 3 with it.
+                const uint pixel_denom_row = (grad_mean2d_abs != nullptr) ? 3u : 2u;
+                densification_info[pixel_denom_row * n_primitives + primitive_idx] += pixel_weight;
+            }
             if (grad_mean2d_abs != nullptr) {
                 // FastGS AbsGS: homodirectional (per-pixel abs-summed) screen-space gradient magnitude
                 // for the split-decision channel. densification_info has 3 rows when this is active.

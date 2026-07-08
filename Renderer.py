@@ -110,9 +110,7 @@ class FasterGSRenderer(BaseRenderer):
             densification_info=self.model.gaussians.densification_info
             if update_densification_info
             else torch.empty(0),
-            pixel_denom=self.model.gaussians.pixel_denom
-            if (update_densification_info and self.model.gaussians.pixel_denom is not None)
-            else torch.empty(0),
+            track_pixel_counts=update_densification_info and self.model.gaussians.pixel_weighted,
             depth_scale_reference=depth_scale_reference,
             rasterizer_settings=extract_settings(
                 view,
@@ -140,7 +138,7 @@ class FasterGSRenderer(BaseRenderer):
             sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
             sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
             densification_info=torch.empty(0),
-            pixel_denom=torch.empty(0),
+            track_pixel_counts=False,
             depth_scale_reference=0.0,
             rasterizer_settings=extract_settings(
                 view,

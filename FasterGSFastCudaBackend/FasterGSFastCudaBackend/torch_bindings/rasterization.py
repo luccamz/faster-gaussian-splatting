@@ -51,7 +51,7 @@ class _Rasterize(torch.autograd.Function):
         sh_coefficients_0: torch.Tensor,
         sh_coefficients_rest: torch.Tensor,
         densification_info: torch.Tensor,
-        pixel_denom: torch.Tensor,
+        track_pixel_counts: bool,
         depth_scale_reference: float,
         rasterizer_settings: RasterizerSettings,
     ) -> torch.Tensor:
@@ -88,10 +88,9 @@ class _Rasterize(torch.autograd.Function):
             bucket_buffers,
         )
         ctx.densification_info = densification_info
-        ctx.pixel_denom = pixel_denom
+        ctx.track_pixel_counts = track_pixel_counts
         ctx.depth_scale_reference = depth_scale_reference
         ctx.mark_non_differentiable(densification_info)
-        ctx.mark_non_differentiable(pixel_denom)
         return image
 
     @staticmethod
@@ -109,7 +108,7 @@ class _Rasterize(torch.autograd.Function):
             grad_sh_coefficients_rest,
         ) = _C.backward(
             ctx.densification_info,
-            ctx.pixel_denom,
+            ctx.track_pixel_counts,
             ctx.depth_scale_reference,
             grad_image,
             *ctx.saved_tensors,
@@ -124,7 +123,7 @@ class _Rasterize(torch.autograd.Function):
             grad_sh_coefficients_0,
             grad_sh_coefficients_rest,
             None,  # densification_info
-            None,  # pixel_denom
+            None,  # track_pixel_counts
             None,  # depth_scale_reference
             None,  # rasterizer_settings
         )
@@ -138,7 +137,7 @@ def diff_rasterize(
     sh_coefficients_0: torch.Tensor,
     sh_coefficients_rest: torch.Tensor,
     densification_info: torch.Tensor,
-    pixel_denom: torch.Tensor,
+    track_pixel_counts: bool,
     depth_scale_reference: float,
     rasterizer_settings: RasterizerSettings,
 ) -> torch.Tensor:
@@ -150,7 +149,7 @@ def diff_rasterize(
         sh_coefficients_0,
         sh_coefficients_rest,
         densification_info,
-        pixel_denom,
+        track_pixel_counts,
         depth_scale_reference,
         rasterizer_settings,
     )
