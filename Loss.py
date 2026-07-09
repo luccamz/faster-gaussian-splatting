@@ -11,6 +11,13 @@ from Optim.Losses.DSSIM import fused_dssim
 from Methods.FasterGSFast.Model import FasterGSModel
 
 
+def _zero_regularization() -> float:
+    """Module-level zero stand-in for the PPISP regularization term when PPISP is disabled.
+    Defined at module scope (rather than a lambda) so the loss remains picklable for full
+    training-state checkpoints."""
+    return 0.0
+
+
 class FasterGSLoss(BaseLoss):
     def __init__(self, loss_config: ConfigParameterList, model: FasterGSModel, freq_anneal_end: int = 0) -> None:
         super().__init__()
@@ -29,7 +36,7 @@ class FasterGSLoss(BaseLoss):
             loss_config.LAMBDA_SCALE_REGULARIZATION,
         )
         if model.ppisp is None:
-            self.add_loss_metric("PPISP_REGULARIZATION", lambda: 0.0, 0.0)
+            self.add_loss_metric("PPISP_REGULARIZATION", _zero_regularization, 0.0)
         else:
             self.add_loss_metric(
                 "PPISP_REGULARIZATION", model.ppisp.model.get_regularization_loss, 1.0
