@@ -259,6 +259,104 @@ def count_metric_from_buffers(
     )
 
 
+def rasterize_with_gradients(
+    means: torch.Tensor,
+    scales: torch.Tensor,
+    rotations: torch.Tensor,
+    opacities: torch.Tensor,
+    sh_coefficients_0: torch.Tensor,
+    sh_coefficients_rest: torch.Tensor,
+    rasterizer_settings: RasterizerSettings,
+    clamp_output: bool = False,
+) -> "tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]":
+    """Renders a view and its analytical image-space gradients (Niedermayr et al., Eqs. 8-10).
+
+    Returns `(image, grad_x, grad_y, grad_xy)`, all CHW float tensors of shape [3, H, W]: the rendered
+    color and the spatial derivatives dI/dx, dI/dy, d2I/dxdy of the image w.r.t. screen position. The
+    gradients are computed by a second pass over the render's own rasterization buffers (reusing the
+    projection and depth/tile sort, like `count_metric_from_buffers`), so no autograd, loss or ground
+    truth is involved -- a frozen model can be rendered and differentiated in a single forward call.
+    The image is left unclamped by default so it stays consistent with the gradients; clamp the final
+    upscaled result instead (see `spline_upscale` / `rasterize_upscale`).
+    """
+    image, buffers = rasterize_with_buffers(
+        means,
+        scales,
+        rotations,
+        opacities,
+        sh_coefficients_0,
+        sh_coefficients_rest,
+        rasterizer_settings,
+        to_chw=True,
+        clamp_output=clamp_output,
+    )
+    (
+        primitive_buffers,
+        tile_buffers,
+        instance_buffers,
+        n_instances,
+        instance_primitive_indices_selector,
+    ) = buffers
+    grad_x, grad_y, grad_xy = _C.gradient_render_from_buffers(
+        primitive_buffers,
+        tile_buffers,
+        instance_buffers,
+        rasterizer_settings.bg_color,
+        means.shape[0],
+        n_instances,
+        instance_primitive_indices_selector,
+        rasterizer_settings.width,
+        rasterizer_settings.height,
+    )
+    return image, grad_x, grad_y, grad_xy
+
+
+def spline_upscale(
+    image: torch.Tensor,
+    grad_x: torch.Tensor,
+    grad_y: torch.Tensor,
+    grad_xy: torch.Tensor,
+    factor: int,
+    to_chw: bool = True,
+    clamp_output: bool = True,
+) -> torch.Tensor:
+    """Gradient-aware bicubic (Hermite) spline upscaling by an integer factor (Niedermayr et al.,
+    Eqs. 6-7). `image` and `grad_*` are CHW [3, H, W] (as returned by `rasterize_with_gradients`);
+    returns [3, H*factor, W*factor] (CHW) or the HWC equivalent. Method-agnostic: it only needs an
+    image and its analytical gradients, so it can be validated in isolation on any test signal.
+    """
+    return _C.spline_upscale(image, grad_x, grad_y, grad_xy, factor, to_chw, clamp_output)
+
+
+def rasterize_upscale(
+    means: torch.Tensor,
+    scales: torch.Tensor,
+    rotations: torch.Tensor,
+    opacities: torch.Tensor,
+    sh_coefficients_0: torch.Tensor,
+    sh_coefficients_rest: torch.Tensor,
+    rasterizer_settings: RasterizerSettings,
+    factor: int,
+    to_chw: bool = True,
+    clamp_output: bool = True,
+) -> torch.Tensor:
+    """Convenience chain: render the view (at `rasterizer_settings`' resolution) with analytical
+    gradients, then spline-upscale by `factor`. Used for render-level upscaling -- render at low
+    resolution, upscale to the target resolution.
+    """
+    image, grad_x, grad_y, grad_xy = rasterize_with_gradients(
+        means,
+        scales,
+        rotations,
+        opacities,
+        sh_coefficients_0,
+        sh_coefficients_rest,
+        rasterizer_settings,
+        clamp_output=False,
+    )
+    return spline_upscale(image, grad_x, grad_y, grad_xy, factor, to_chw, clamp_output)
+
+
 def update_pruning_scores(
     scores: torch.Tensor,
     means: torch.Tensor,

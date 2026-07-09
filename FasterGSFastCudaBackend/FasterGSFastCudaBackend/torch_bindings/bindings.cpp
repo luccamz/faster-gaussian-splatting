@@ -16,6 +16,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("inference_with_buffers", &rasterization_api::inference_with_buffers_wrapper);
     m.def("pruning_scores", &rasterization_api::pruning_scores_wrapper);
     m.def("metric_counts_from_buffers", &rasterization_api::metric_counts_from_buffers_wrapper);
+    m.def("gradient_render_from_buffers", &rasterization_api::gradient_render_from_buffers_wrapper);
+    m.def("spline_upscale", &rasterization_api::spline_upscale_wrapper);
     m.def("adam_step", &adam_api::adam_step_wrapper);
     m.def("update_3d_filter", &filter3d_api::update_3d_filter_wrapper);
     m.def("relocation_adjustment", &densification_api::relocation_wrapper);

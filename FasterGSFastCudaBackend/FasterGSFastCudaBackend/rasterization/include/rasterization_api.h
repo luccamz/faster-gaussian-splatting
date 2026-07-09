@@ -143,4 +143,26 @@ namespace faster_gs::rasterization {
         const int width,
         const int height);
 
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+    gradient_render_from_buffers_wrapper(
+        const torch::Tensor& primitive_buffers,
+        const torch::Tensor& tile_buffers,
+        const torch::Tensor& instance_buffers,
+        const torch::Tensor& bg_color,
+        const int n_primitives,
+        const int n_instances,
+        const int instance_primitive_indices_selector,
+        const int width,
+        const int height);
+
+    torch::Tensor
+    spline_upscale_wrapper(
+        const torch::Tensor& image,
+        const torch::Tensor& grad_x,
+        const torch::Tensor& grad_y,
+        const torch::Tensor& grad_xy,
+        const int factor,
+        const bool to_chw,
+        const bool clamp_output);
+
 }

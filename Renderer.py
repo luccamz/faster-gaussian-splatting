@@ -16,6 +16,8 @@ from Methods.FasterGSFast.FasterGSFastCudaBackend import (
     diff_rasterize,
     rasterize,
     rasterize_with_buffers,
+    rasterize_with_gradients,
+    spline_upscale,
     update_pruning_scores,
     count_metric_from_buffers,
     RasterizerSettings,
@@ -68,6 +70,7 @@ def extract_settings(
     SCALE_MODIFIER=1.0,
     PROPER_ANTIALIASING=False,
     FORCE_OPTIMIZED_INFERENCE=False,
+    UPSCALE_FACTOR=1,
 )
 class FasterGSRenderer(BaseRenderer):
     """Wrapper around the rasterization module from 3DGS."""
@@ -129,6 +132,8 @@ class FasterGSRenderer(BaseRenderer):
         self, view: View, to_chw: bool = False
     ) -> dict[str, torch.Tensor]:
         """Renders an image for a given view."""
+        if self.UPSCALE_FACTOR > 1:
+            return self.render_image_upscaled(view, to_chw)
         image = diff_rasterize(
             means=self.model.gaussians.means,
             scales=self.model.gaussians.raw_scales
@@ -151,6 +156,42 @@ class FasterGSRenderer(BaseRenderer):
             image = self.model.ppisp(image, view)
         else:
             image = image.clamp(0.0, 1.0)
+        return {"rgb": image if to_chw else image.permute(1, 2, 0)}
+
+    @torch.no_grad()
+    def render_image_upscaled(
+        self, view: View, to_chw: bool = False
+    ) -> dict[str, torch.Tensor]:
+        """Renders a view at UPSCALE_FACTOR-reduced resolution and upscales it back with the
+        gradient-aware spline (Niedermayr et al.): the low-res render and its analytical image
+        gradients feed a bicubic Hermite interpolation to the full view resolution. The view's
+        dimensions must be divisible by UPSCALE_FACTOR (the low-res render is `size // factor` and the
+        upscaled output is `(size // factor) * factor`); compute_metrics validates the resolution
+        against the ground truth and fails loudly otherwise.
+        """
+        image, grad_x, grad_y, grad_xy = rasterize_with_gradients(
+            means=self.model.gaussians.means,
+            scales=self.model.gaussians.raw_scales
+            + math.log(max(self.SCALE_MODIFIER, 1e-6)),
+            rotations=self.model.gaussians.raw_rotations,
+            opacities=self.model.gaussians.raw_opacities,
+            sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
+            sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
+            rasterizer_settings=extract_settings(
+                view,
+                self.model.gaussians.active_sh_bases,
+                view.camera.background_color,
+                self.PROPER_ANTIALIASING,
+                float(self.UPSCALE_FACTOR),
+            ),
+            clamp_output=False,
+        )
+        image = spline_upscale(
+            image, grad_x, grad_y, grad_xy, self.UPSCALE_FACTOR,
+            to_chw=True, clamp_output=self.model.ppisp is None,
+        )
+        if self.model.ppisp is not None:
+            image = self.model.ppisp(image, view)
         return {"rgb": image if to_chw else image.permute(1, 2, 0)}
 
     @torch.inference_mode()

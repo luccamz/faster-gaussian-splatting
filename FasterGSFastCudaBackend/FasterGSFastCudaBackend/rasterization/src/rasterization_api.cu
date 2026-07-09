@@ -4,6 +4,8 @@
 #include "inference.h"
 #include "pruning_scores.h"
 #include "metric_counts.h"
+#include "gradient_render.h"
+#include "spline_upscale.h"
 #include "torch_utils.h"
 #include "rasterization_config.h"
 #include "helper_math.h"
@@ -391,6 +393,77 @@ faster_gs::rasterization::pruning_scores_wrapper(
         far_plane,
         proper_antialiasing
     );
+}
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+faster_gs::rasterization::gradient_render_from_buffers_wrapper(
+    const torch::Tensor& primitive_buffers,
+    const torch::Tensor& tile_buffers,
+    const torch::Tensor& instance_buffers,
+    const torch::Tensor& bg_color,
+    const int n_primitives,
+    const int n_instances,
+    const int instance_primitive_indices_selector,
+    const int width,
+    const int height)
+{
+    // analytical image gradients (dI/dx, dI/dy, d2I/dxdy) for a view already rendered by
+    // inference_with_buffers; CHW to match the render layout the spline upscaler consumes
+    const torch::TensorOptions float_options = torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA);
+    torch::Tensor grad_x = torch::empty({3, height, width}, float_options);
+    torch::Tensor grad_y = torch::empty({3, height, width}, float_options);
+    torch::Tensor grad_xy = torch::empty({3, height, width}, float_options);
+    gradient_render_from_buffers(
+        reinterpret_cast<char*>(primitive_buffers.data_ptr()),
+        reinterpret_cast<char*>(tile_buffers.data_ptr()),
+        reinterpret_cast<char*>(instance_buffers.data_ptr()),
+        reinterpret_cast<float3*>(bg_color.contiguous().data_ptr<float>()),
+        grad_x.data_ptr<float>(),
+        grad_y.data_ptr<float>(),
+        grad_xy.data_ptr<float>(),
+        n_primitives,
+        n_instances,
+        instance_primitive_indices_selector,
+        width,
+        height
+    );
+    return {grad_x, grad_y, grad_xy};
+}
+
+torch::Tensor
+faster_gs::rasterization::spline_upscale_wrapper(
+    const torch::Tensor& image,
+    const torch::Tensor& grad_x,
+    const torch::Tensor& grad_y,
+    const torch::Tensor& grad_xy,
+    const int factor,
+    const bool to_chw,
+    const bool clamp_output)
+{
+    CHECK_INPUT(config::debug, image, "image");
+    CHECK_INPUT(config::debug, grad_x, "grad_x");
+    CHECK_INPUT(config::debug, grad_y, "grad_y");
+    CHECK_INPUT(config::debug, grad_xy, "grad_xy");
+    // image / grad_* are CHW [3, height, width]
+    const int height = image.size(1);
+    const int width = image.size(2);
+    const int out_h = height * factor;
+    const int out_w = width * factor;
+    const torch::TensorOptions float_options = torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA);
+    torch::Tensor out = to_chw ? torch::empty({3, out_h, out_w}, float_options) : torch::empty({out_h, out_w, 3}, float_options);
+    spline_upscale(
+        image.data_ptr<float>(),
+        grad_x.data_ptr<float>(),
+        grad_y.data_ptr<float>(),
+        grad_xy.data_ptr<float>(),
+        out.data_ptr<float>(),
+        width,
+        height,
+        factor,
+        to_chw,
+        clamp_output
+    );
+    return out;
 }
 
 void
