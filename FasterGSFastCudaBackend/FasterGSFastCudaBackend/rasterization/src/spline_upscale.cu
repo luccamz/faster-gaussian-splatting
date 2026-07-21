@@ -11,12 +11,11 @@ void faster_gs::rasterization::spline_upscale(
     float* out,
     const int width,
     const int height,
-    const int factor,
+    const int out_w,
+    const int out_h,
     const bool to_chw,
     const bool clamp_output)
 {
-    const int out_w = width * factor;
-    const int out_h = height * factor;
     const dim3 block(config::tile_width, config::tile_height, 1);
     const dim3 grid(div_round_up(out_w, config::tile_width), div_round_up(out_h, config::tile_height), 1);
     kernels::spline_upscale::spline_upscale_cu<<<grid, block>>>(
@@ -27,7 +26,8 @@ void faster_gs::rasterization::spline_upscale(
         out,
         width,
         height,
-        factor,
+        out_w,
+        out_h,
         to_chw,
         clamp_output
     );

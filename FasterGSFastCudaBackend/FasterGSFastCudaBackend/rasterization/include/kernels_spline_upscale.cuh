@@ -80,8 +80,8 @@ namespace faster_gs::rasterization::kernels::spline_upscale {
     }
 
     // image / grad_* are CHW float buffers [3, height, width]; out is [3, out_h, out_w] (CHW) or
-    // [out_h, out_w, 3] (HWC) where out_h = height*factor, out_w = width*factor. One thread per
-    // output pixel, all three channels.
+    // [out_h, out_w, 3] (HWC) at an arbitrary target resolution (out_w >= width, out_h >= height --
+    // upscaling only, enforced by the caller). One thread per output pixel, all three channels.
     __global__ void spline_upscale_cu(
         const float* __restrict__ image,
         const float* __restrict__ grad_x,
@@ -90,28 +90,35 @@ namespace faster_gs::rasterization::kernels::spline_upscale {
         float* __restrict__ out,
         const int width,
         const int height,
-        const int factor,
+        const int out_w,
+        const int out_h,
         const bool to_chw,
         const bool clamp_output)
     {
-        const int out_w = width * factor;
-        const int out_h = height * factor;
         const int out_x = blockIdx.x * blockDim.x + threadIdx.x;
         const int out_y = blockIdx.y * blockDim.y + threadIdx.y;
         if (out_x >= out_w || out_y >= out_h) return;
 
-        // map the output pixel centre back to low-res continuous coordinates
-        const float xl = (out_x + 0.5f) / factor - 0.5f;
-        const float yl = (out_y + 0.5f) / factor - 0.5f;
-        const int x0 = static_cast<int>(floorf(xl));
-        const int y0 = static_cast<int>(floorf(yl));
+        // Map the output pixel centre back to low-res continuous coordinates. Per-axis scale is
+        // anisotropy-safe for non-integer / non-square targets; width/out_w = 1/factor when out_w =
+        // width*factor, so an integer factor stays bit-identical. The -0.5 turns a half-pixel-centred
+        // output coordinate into the low-res sample-index space the Hermite cells live in: low-res
+        // sample i sits at continuous position i+0.5, matching the rasterizer's pixel convention
+        // (kernels_forward.cuh: pixel = (i, j) + 0.5f).
+        const float inv_scale_x = static_cast<float>(width) / out_w;
+        const float inv_scale_y = static_cast<float>(height) / out_h;
+        const float xl = (out_x + 0.5f) * inv_scale_x - 0.5f;
+        const float yl = (out_y + 0.5f) * inv_scale_y - 0.5f;
+        // Pick the cell with a single clamp to [0, size-2]: interior yields tx, ty in [0, 1); the outer
+        // sub-pixel ring (xl < 0 or xl > width-1) keeps valid corners x0, x0+1 and lets tx/ty fall just
+        // outside [0, 1] so the boundary Hermite cubic extrapolates from the analytical edge gradients
+        // instead of replicating. Overhang is < 1 low-res pixel. Upscaling guarantees width, height >= 2.
+        const int x0 = min(max(static_cast<int>(floorf(xl)), 0), width - 2);
+        const int y0 = min(max(static_cast<int>(floorf(yl)), 0), height - 2);
+        const int x1 = x0 + 1;
+        const int y1 = y0 + 1;
         const float tx = xl - x0;
         const float ty = yl - y0;
-        // cell corner indices with edge replication
-        const int xa = min(max(x0, 0), width - 1);
-        const int xb = min(max(x0 + 1, 0), width - 1);
-        const int ya = min(max(y0, 0), height - 1);
-        const int yb = min(max(y0 + 1, 0), height - 1);
 
         const int n_pixels = width * height;
         const int out_pixels = out_w * out_h;
@@ -123,8 +130,8 @@ namespace faster_gs::rasterization::kernels::spline_upscale {
             const float* gx = grad_x + ch * n_pixels;
             const float* gy = grad_y + ch * n_pixels;
             const float* gxy = grad_xy + ch * n_pixels;
-            const int i00 = ya * width + xa, i10 = ya * width + xb;
-            const int i01 = yb * width + xa, i11 = yb * width + xb;
+            const int i00 = y0 * width + x0, i10 = y0 * width + x1;
+            const int i01 = y1 * width + x0, i11 = y1 * width + x1;
             float value = hermite_eval(
                 im[i00], im[i10], im[i01], im[i11],
                 gx[i00], gx[i10], gx[i01], gx[i11],

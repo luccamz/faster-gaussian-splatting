@@ -436,7 +436,8 @@ faster_gs::rasterization::spline_upscale_wrapper(
     const torch::Tensor& grad_x,
     const torch::Tensor& grad_y,
     const torch::Tensor& grad_xy,
-    const int factor,
+    const int out_w,
+    const int out_h,
     const bool to_chw,
     const bool clamp_output)
 {
@@ -444,11 +445,9 @@ faster_gs::rasterization::spline_upscale_wrapper(
     CHECK_INPUT(config::debug, grad_x, "grad_x");
     CHECK_INPUT(config::debug, grad_y, "grad_y");
     CHECK_INPUT(config::debug, grad_xy, "grad_xy");
-    // image / grad_* are CHW [3, height, width]
+    // image / grad_* are CHW [3, height, width]; out is [3, out_h, out_w] at an arbitrary target size
     const int height = image.size(1);
     const int width = image.size(2);
-    const int out_h = height * factor;
-    const int out_w = width * factor;
     const torch::TensorOptions float_options = torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA);
     torch::Tensor out = to_chw ? torch::empty({3, out_h, out_w}, float_options) : torch::empty({out_h, out_w, 3}, float_options);
     spline_upscale(
@@ -459,7 +458,8 @@ faster_gs::rasterization::spline_upscale_wrapper(
         out.data_ptr<float>(),
         width,
         height,
-        factor,
+        out_w,
+        out_h,
         to_chw,
         clamp_output
     );

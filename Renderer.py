@@ -71,6 +71,8 @@ def extract_settings(
     PROPER_ANTIALIASING=False,
     FORCE_OPTIMIZED_INFERENCE=False,
     UPSCALE_FACTOR=1,
+    TARGET_WIDTH=0,
+    TARGET_HEIGHT=0,
 )
 class FasterGSRenderer(BaseRenderer):
     """Wrapper around the rasterization module from 3DGS."""
@@ -162,12 +164,13 @@ class FasterGSRenderer(BaseRenderer):
     def render_image_upscaled(
         self, view: View, to_chw: bool = False
     ) -> dict[str, torch.Tensor]:
-        """Renders a view at UPSCALE_FACTOR-reduced resolution and upscales it back with the
-        gradient-aware spline (Niedermayr et al.): the low-res render and its analytical image
-        gradients feed a bicubic Hermite interpolation to the full view resolution. The view's
-        dimensions must be divisible by UPSCALE_FACTOR (the low-res render is `size // factor` and the
-        upscaled output is `(size // factor) * factor`); compute_metrics validates the resolution
-        against the ground truth and fails loudly otherwise.
+        """Renders a view at UPSCALE_FACTOR-reduced resolution and upscales it with the gradient-aware
+        spline (Niedermayr et al.): the low-res render and its analytical image gradients feed a bicubic
+        Hermite interpolation to the target resolution. The low-res render is `size // UPSCALE_FACTOR`;
+        the output is TARGET_WIDTH x TARGET_HEIGHT, or the full view resolution when those are 0 (the
+        default). The target may be a non-integer scale of the render, so it can match an arbitrary
+        ground-truth resolution exactly -- compute_metrics validates render vs GT and fails loudly on a
+        mismatch. Upscaling only: the target must be >= the low-res render size (asserted in spline_upscale).
         """
         image, grad_x, grad_y, grad_xy = rasterize_with_gradients(
             means=self.model.gaussians.means,
@@ -186,8 +189,10 @@ class FasterGSRenderer(BaseRenderer):
             ),
             clamp_output=False,
         )
+        target_w = self.TARGET_WIDTH if self.TARGET_WIDTH > 0 else view.camera.width
+        target_h = self.TARGET_HEIGHT if self.TARGET_HEIGHT > 0 else view.camera.height
         image = spline_upscale(
-            image, grad_x, grad_y, grad_xy, self.UPSCALE_FACTOR,
+            image, grad_x, grad_y, grad_xy, target_w, target_h,
             to_chw=True, clamp_output=self.model.ppisp is None,
         )
         if self.model.ppisp is not None:

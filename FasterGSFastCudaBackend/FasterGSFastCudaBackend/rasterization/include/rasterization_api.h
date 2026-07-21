@@ -161,7 +161,8 @@ namespace faster_gs::rasterization {
         const torch::Tensor& grad_x,
         const torch::Tensor& grad_y,
         const torch::Tensor& grad_xy,
-        const int factor,
+        const int out_w,
+        const int out_h,
         const bool to_chw,
         const bool clamp_output);
 

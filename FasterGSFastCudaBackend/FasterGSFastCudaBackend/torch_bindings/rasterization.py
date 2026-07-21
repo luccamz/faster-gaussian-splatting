@@ -316,16 +316,23 @@ def spline_upscale(
     grad_x: torch.Tensor,
     grad_y: torch.Tensor,
     grad_xy: torch.Tensor,
-    factor: int,
+    out_w: int,
+    out_h: int,
     to_chw: bool = True,
     clamp_output: bool = True,
 ) -> torch.Tensor:
-    """Gradient-aware bicubic (Hermite) spline upscaling by an integer factor (Niedermayr et al.,
-    Eqs. 6-7). `image` and `grad_*` are CHW [3, H, W] (as returned by `rasterize_with_gradients`);
-    returns [3, H*factor, W*factor] (CHW) or the HWC equivalent. Method-agnostic: it only needs an
-    image and its analytical gradients, so it can be validated in isolation on any test signal.
+    """Gradient-aware bicubic (Hermite) spline upscaling to an arbitrary target resolution (Niedermayr
+    et al., Eqs. 6-7). `image` and `grad_*` are CHW [3, H, W] (as returned by `rasterize_with_gradients`);
+    returns [3, out_h, out_w] (CHW) or the HWC equivalent. The target may be a non-integer scale of the
+    source, which is what lets it hit an exact ground-truth resolution for metrics. Upscaling only:
+    `out_w >= W` and `out_h >= H` (downsampling a point-sampled bicubic would alias). Method-agnostic:
+    it only needs an image and its analytical gradients, so it can be validated on any test signal.
     """
-    return _C.spline_upscale(image, grad_x, grad_y, grad_xy, factor, to_chw, clamp_output)
+    H, W = image.shape[-2], image.shape[-1]
+    assert out_w >= W and out_h >= H, (
+        f"spline_upscale only upscales: target ({out_w}x{out_h}) must be >= source ({W}x{H})"
+    )
+    return _C.spline_upscale(image, grad_x, grad_y, grad_xy, out_w, out_h, to_chw, clamp_output)
 
 
 def rasterize_upscale(
@@ -336,13 +343,14 @@ def rasterize_upscale(
     sh_coefficients_0: torch.Tensor,
     sh_coefficients_rest: torch.Tensor,
     rasterizer_settings: RasterizerSettings,
-    factor: int,
+    out_w: int,
+    out_h: int,
     to_chw: bool = True,
     clamp_output: bool = True,
 ) -> torch.Tensor:
     """Convenience chain: render the view (at `rasterizer_settings`' resolution) with analytical
-    gradients, then spline-upscale by `factor`. Used for render-level upscaling -- render at low
-    resolution, upscale to the target resolution.
+    gradients, then spline-upscale to the target resolution `(out_w, out_h)`. Used for render-level
+    upscaling -- render at low resolution, upscale to the (possibly non-integer-scaled) target.
     """
     image, grad_x, grad_y, grad_xy = rasterize_with_gradients(
         means,
@@ -354,7 +362,7 @@ def rasterize_upscale(
         rasterizer_settings,
         clamp_output=False,
     )
-    return spline_upscale(image, grad_x, grad_y, grad_xy, factor, to_chw, clamp_output)
+    return spline_upscale(image, grad_x, grad_y, grad_xy, out_w, out_h, to_chw, clamp_output)
 
 
 def update_pruning_scores(
